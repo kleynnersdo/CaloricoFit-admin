@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, isMockSupabase, supabaseUrl } from '../lib/supabase';
 
 interface LoginProps {
   onLogin: () => void;
@@ -54,9 +54,22 @@ export default function Login({ onLogin }: LoginProps) {
           <p className="text-gray-500 mt-2">Sistema Administrativo y POS</p>
         </div>
 
+        {isMockSupabase && (
+          <div className="mb-4 bg-amber-50 text-amber-800 p-4 rounded-lg text-xs border border-amber-200">
+            <span className="font-semibold block mb-1">⚠️ Supabase No Configurado</span>
+            El sistema está usando una base de datos simulada. Debes configurar <strong>VITE_SUPABASE_URL</strong> y <strong>VITE_SUPABASE_ANON_KEY</strong> en tus variables de entorno de Vercel o de la aplicación.
+          </div>
+        )}
+
         {error && (
-          <div className="mb-4 bg-red-50 text-red-600 p-3 rounded-lg text-sm font-medium border border-red-100">
-            {error}
+          <div className="mb-4 bg-red-50 text-red-600 p-4 rounded-lg text-sm font-medium border border-red-100">
+            <span className="block font-semibold">{error}</span>
+            {error.includes('Failed to fetch') && (
+              <span className="block mt-1 text-xs text-red-500 font-normal">
+                Este error ocurre cuando el navegador no puede conectarse a Supabase. 
+                Verifica que la URL del proyecto sea correcta (actualmente: <code>{supabaseUrl}</code>) y que no incluya subrutas adicionales.
+              </span>
+            )}
           </div>
         )}
 

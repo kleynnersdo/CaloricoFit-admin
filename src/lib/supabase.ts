@@ -27,5 +27,6 @@ try {
 
 export const supabaseUrl = cleanUrl;
 export const supabaseAnonKey = rawKey;
+export const isMockSupabase = supabaseUrl === 'https://mock.supabase.co' || supabaseAnonKey === 'mock-key';
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
