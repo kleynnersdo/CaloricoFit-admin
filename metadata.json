@@ -1,0 +1,10 @@
+{
+  "name": "Calórico Fit POS",
+  "description": "Sistema Administrativo y Punto de Venta para venta de suplementos y equipos de gimnasio",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
