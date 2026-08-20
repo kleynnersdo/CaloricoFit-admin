@@ -15,9 +15,12 @@ Set-Location $Root
 
 $env:VPS_APP_SLUG = "caloricofit"
 
+$GitBash = "C:\Program Files\Git\bin\bash.exe"
+if (-not (Test-Path $GitBash)) { $GitBash = "bash" }
+
 if ($DeployOnly) {
-    bash scripts/sync-vps.sh $Target
+    & $GitBash scripts/sync-vps.sh $Target
     exit $LASTEXITCODE
 }
 
-bash scripts/release.sh $Target
+& $GitBash scripts/release.sh $Target
