@@ -19,6 +19,9 @@ tar -czf "$TARBALL" \
   --exclude=node_modules \
   --exclude=dist \
   --exclude=.git \
+  --exclude=.env \
+  --exclude=.env.local \
+  --exclude=.env.production \
   .
 
 scp "$TARBALL" "${VPS_HOST}:/tmp/${APP_SLUG}-deploy.tgz"
