@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { supabase, supabaseUrl, supabaseAnonKey } from '../lib/supabase';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
 import { LogOut, Users, Package, BarChart3, Settings, Plus, Edit, Trash2, Calendar, FileText, Bell, CheckCircle, X, Download, HelpCircle, Eye, Printer, AlertTriangle } from 'lucide-react';
 import { addDays, format, differenceInDays, startOfDay, startOfWeek, startOfMonth } from 'date-fns';
 import * as XLSX from 'xlsx';
@@ -1079,18 +1078,12 @@ export default function AdminDashboard({ onLogout }: Props) {
      }
 
      setIsSubmitting(true);
-     // Create a secondary client just for auth so we don't sign out the admin
-     const authClient = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: { 
-          persistSession: true, 
-          autoRefreshToken: false,
-          storageKey: 'supabase.auth.temp.' + Date.now()
-        }
-     });
 
      const virtualEmail = workerForm.email ? workerForm.email : `${workerForm.document_id.trim()}@caloricofit.com`;
 
-     const { data, error } = await authClient.auth.signUp({
+     // En local, signUp no toca la sesión del admin. En cloud, supabase-js también
+     // puede usarse así si no persistimos otra sesión en este flujo.
+     const { data, error } = await supabase.auth.signUp({
         email: virtualEmail,
         password: workerForm.password,
         options: {
@@ -1127,9 +1120,12 @@ export default function AdminDashboard({ onLogout }: Props) {
            first_name: workerForm.first_name,
            last_name: workerForm.last_name,
            document_id: workerForm.document_id,
+           email: virtualEmail,
            phone: workerForm.phone,
-           role: workerForm.role
-        }, { onConflict: 'id' });
+           role: workerForm.role,
+           password: workerForm.password,
+           is_active: true
+        });
         
         if (profileError) {
            errorMessage = profileError.message;

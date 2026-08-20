@@ -1,0 +1,14 @@
+---
+description: Deploy VPS Hostkey para CaloricoFit
+alwaysApply: false
+globs: deploy/**,scripts/deploy.sh,docker-compose.prod.yml,docs/DEPLOY.md
+---
+
+# Deploy VPS
+
+- SSH: `ssh hostkey-vps` (162.141.78.230, user deploy)
+- Path servidor: `/opt/apps/caloricofit`
+- Staging: puerto 8080, prod con dominio + certbot
+- Postgres solo en localhost:5432 — no exponer puerto público
+- Build con `VITE_LOCAL_MODE=true` y `VITE_LOCAL_API_URL` apuntando al dominio/puerto correcto
+- API vía pm2: `caloricofit-api`

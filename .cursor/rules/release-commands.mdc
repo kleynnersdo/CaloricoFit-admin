@@ -1,0 +1,13 @@
+---
+description: Comandos npm/powershell para release a VPS
+alwaysApply: false
+globs: scripts/release.*,scripts/sync-vps.sh,package.json
+---
+
+# Release commands
+
+- `npm run deploy:staging` — merge ender→staging, push, deploy VPS
+- `npm run deploy:main` — merge staging→main, push, deploy VPS
+- `npm run deploy:sync` — solo sync VPS sin merge
+- Skill completa: `kleynners-deploy` (~/.cursor/skills/kleynners-deploy/)
+- Commits solo cuando el usuario lo pida; release exige working tree limpio

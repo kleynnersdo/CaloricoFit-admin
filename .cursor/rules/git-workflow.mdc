@@ -1,0 +1,13 @@
+---
+description: Flujo git ender → staging → main para CaloricoFit y Latin Travel
+alwaysApply: true
+---
+
+# Git workflow
+
+- Desarrollo diario en rama `ender`
+- Merge a `staging` solo cuando esté listo para probar en VPS
+- Merge a `main` solo tras validación en staging
+- Nunca commitear directo a `main` ni hacer push force a main
+- Nunca commitear `.env`, passwords ni keys de Bunny/Supabase
+- Commits solo cuando el usuario lo pida explícitamente

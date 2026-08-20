@@ -4,11 +4,22 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --port=3000 --host=0.0.0.0",
+    "dev": "vite --port=3020 --host=0.0.0.0",
+    "dev:local": "concurrently -k -n api,web -c blue,green \"npm run api:local\" \"vite --port=3020 --strictPort --host=0.0.0.0\"",
+    "api:local": "node server/local-api.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "db:up": "docker compose -f docker-compose.smoke.yml up -d",
+    "db:down": "docker compose -f docker-compose.smoke.yml down",
+    "db:reset": "docker compose -f docker-compose.smoke.yml down -v && docker compose -f docker-compose.smoke.yml up -d",
+    "db:prod:up": "docker compose -f docker-compose.prod.yml up -d",
+    "db:psql": "docker exec -it caloricofit-smoke-db psql -U calorico -d caloricofit",
+    "deploy": "bash scripts/deploy.sh",
+    "deploy:staging": "powershell -NoProfile -File scripts/release.ps1 -Target staging",
+    "deploy:main": "powershell -NoProfile -File scripts/release.ps1 -Target main",
+    "deploy:sync": "powershell -NoProfile -File scripts/release.ps1 -Target staging -DeployOnly"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -16,6 +27,7 @@
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "clsx": "^2.1.1",
+    "cors": "^2.8.6",
     "date-fns": "^4.3.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
@@ -24,6 +36,7 @@
     "html5-qrcode": "^2.3.8",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
+    "pg": "^8.23.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
     "tailwind-merge": "^3.6.0",
@@ -31,9 +44,12 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
+    "@types/pg": "^8.21.0",
     "autoprefixer": "^10.4.21",
+    "concurrently": "^10.0.4",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
