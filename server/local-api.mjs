@@ -4,6 +4,7 @@ import pg from 'pg';
 
 const { Pool } = pg;
 const PORT = Number(process.env.LOCAL_API_PORT || 3032);
+const HOST = process.env.LOCAL_API_HOST || '127.0.0.1';
 
 const pool = new Pool({
   connectionString:
@@ -266,6 +267,6 @@ app.post('/rpc/:name', async (req, res) => {
   res.json({ data: null, error: { message: `RPC ${req.params.name} no disponible en local` } });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[local-api] http://localhost:${PORT} → Postgres smoke`);
+app.listen(PORT, HOST, () => {
+  console.log(`[local-api] http://${HOST}:${PORT} → Postgres smoke`);
 });
