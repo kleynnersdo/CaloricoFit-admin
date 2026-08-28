@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { supabase, isMockSupabase, isLocalMode, supabaseUrl } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 
 interface LoginProps {
   onLogin: () => void;
@@ -54,28 +54,12 @@ export default function Login({ onLogin }: LoginProps) {
           <p className="text-gray-500 mt-2">Sistema Administrativo y POS</p>
         </div>
 
-        {isLocalMode && (
-          <div className="mb-4 bg-emerald-50 text-emerald-800 p-4 rounded-lg text-xs border border-emerald-200">
-            <span className="font-semibold block mb-1">Modo local (sin Supabase)</span>
-            Postgres smoke + API en <code>{supabaseUrl}</code>. Demo: <code>admin@caloricofit.com</code> / <code>123</code>
-          </div>
-        )}
-
-        {isMockSupabase && !isLocalMode && (
-          <div className="mb-4 bg-amber-50 text-amber-800 p-4 rounded-lg text-xs border border-amber-200">
-            <span className="font-semibold block mb-1">Supabase No Configurado</span>
-            Configura <strong>VITE_SUPABASE_URL</strong> y <strong>VITE_SUPABASE_ANON_KEY</strong>, o activa <strong>VITE_LOCAL_MODE=true</strong>.
-          </div>
-        )}
-
         {error && (
           <div className="mb-4 bg-red-50 text-red-600 p-4 rounded-lg text-sm font-medium border border-red-100">
             <span className="block font-semibold">{error}</span>
             {error.includes('Failed to fetch') && (
               <span className="block mt-1 text-xs text-red-500 font-normal">
-                {isLocalMode
-                  ? <>No llega a la API local. Corre <code>npm run db:up</code> y <code>npm run dev:local</code> (API en <code>{supabaseUrl}</code>).</>
-                  : <>No se pudo conectar a Supabase (<code>{supabaseUrl}</code>).</>}
+                No se pudo conectar al servidor. Intente de nuevo en unos segundos.
               </span>
             )}
           </div>

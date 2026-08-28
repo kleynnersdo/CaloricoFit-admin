@@ -85,4 +85,4 @@ if [[ "${INSTALL_NGINX:-}" == "1" ]]; then
   sudo nginx -t && sudo systemctl reload nginx
 fi
 
-echo "==> Deploy OK — http://162.141.78.230:8080"
+echo "==> Deploy OK — ${VITE_LOCAL_API_URL%/api}"
