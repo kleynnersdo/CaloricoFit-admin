@@ -29,11 +29,15 @@ CREATE TABLE IF NOT EXISTS public.products (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     name TEXT NOT NULL,
     category TEXT NOT NULL,
+    subcategory TEXT,
+    flavor TEXT,
     sku TEXT UNIQUE,
     barcode TEXT UNIQUE,
     image_url TEXT,
     cost_price NUMERIC(10,2) NOT NULL,
     sale_price NUMERIC(10,2) NOT NULL,
+    wholesale_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+    min_wholesale_qty INTEGER NOT NULL DEFAULT 0,
     stock_quantity INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
@@ -66,6 +70,7 @@ CREATE TABLE IF NOT EXISTS public.sales (
     exchange_rate_applied NUMERIC(10,2) NOT NULL,
     points_earned INTEGER DEFAULT 0,
     points_redeemed INTEGER DEFAULT 0,
+    is_wholesale BOOLEAN DEFAULT false,
     status TEXT DEFAULT 'COMPLETED' CHECK (status IN ('COMPLETED', 'VOIDED')),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
@@ -96,7 +101,7 @@ CREATE TABLE IF NOT EXISTS public.recurring_expenses (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     description TEXT NOT NULL,
     amount_usd NUMERIC(10,2) NOT NULL,
-    frequency TEXT NOT NULL CHECK (frequency IN ('monthly', 'weekly')),
+    frequency TEXT NOT NULL CHECK (frequency IN ('monthly', 'weekly', 'once')),
     next_due_date DATE NOT NULL,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL

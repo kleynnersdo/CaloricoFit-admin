@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS public.worker_profiles (
     email TEXT,
     phone TEXT,
     role TEXT NOT NULL CHECK (role IN ('admin', 'seller')),
-    password TEXT DEFAULT '123',
+    password TEXT DEFAULT 'Calorico123*2026',
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
@@ -45,11 +45,14 @@ CREATE TABLE IF NOT EXISTS public.products (
     name TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT 'General',
     subcategory TEXT,
+    flavor TEXT,
     sku TEXT UNIQUE,
     barcode TEXT UNIQUE,
     image_url TEXT,
     cost_price NUMERIC(10,2) NOT NULL DEFAULT 0,
     sale_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+    wholesale_price NUMERIC(10,2) NOT NULL DEFAULT 0,
+    min_wholesale_qty INTEGER NOT NULL DEFAULT 0,
     stock_quantity INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
@@ -89,7 +92,8 @@ CREATE TABLE IF NOT EXISTS public.sales (
     exchange_rate_applied NUMERIC(10,2) NOT NULL DEFAULT 1,
     points_earned INTEGER DEFAULT 0,
     points_redeemed INTEGER DEFAULT 0,
-    status TEXT DEFAULT 'COMPLETED',
+    is_wholesale BOOLEAN DEFAULT false,
+    status TEXT DEFAULT 'COMPLETED' CHECK (status IN ('COMPLETED', 'VOIDED')),
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
@@ -116,7 +120,7 @@ CREATE TABLE IF NOT EXISTS public.recurring_expenses (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     description TEXT NOT NULL,
     amount_usd NUMERIC(10,2) NOT NULL,
-    frequency TEXT NOT NULL CHECK (frequency IN ('monthly', 'weekly')),
+    frequency TEXT NOT NULL CHECK (frequency IN ('monthly', 'weekly', 'once')),
     next_due_date DATE NOT NULL,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL

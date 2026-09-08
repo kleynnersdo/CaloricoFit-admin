@@ -7,21 +7,25 @@ export interface Product {
   name: string;
   category: string;
   subcategory?: string;
+  flavor?: string;
   barcode: string;
   sku: string;
   sale_price: number;
-  cost_price: number; // Important for calculating profits
+  cost_price: number;
+  wholesale_price?: number;
+  min_wholesale_qty?: number;
   stock_quantity: number;
 }
 
 export interface CartItem {
   product: Product;
   quantity: number;
+  isWholesale?: boolean;
 }
 
 export interface Customer {
   id: string;
-  document_id: string; // Cédula
+  document_id: string;
   first_name: string;
   last_name: string;
   phone: string;
@@ -39,3 +43,9 @@ export interface PaymentMethod {
   is_active: boolean;
 }
 
+export function lineUnitPrice(item: CartItem): number {
+  if (item.isWholesale && Number(item.product.wholesale_price) > 0) {
+    return Number(item.product.wholesale_price);
+  }
+  return Number(item.product.sale_price || 0);
+}

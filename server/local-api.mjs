@@ -48,7 +48,7 @@ app.post('/auth/login', async (req, res) => {
     );
 
     const user = rows[0];
-    if (!user || String(user.password || '123') !== password) {
+    if (!user || String(user.password || 'Calorico123*2026') !== password) {
       return res.status(401).json({ error: 'Invalid login credentials' });
     }
     if (user.is_active === false) {
@@ -108,7 +108,7 @@ app.post('/auth/signup', async (req, res) => {
         email,
         phone || null,
         role || 'seller',
-        password || '123',
+        password || 'Calorico123*2026',
       ]
     );
 

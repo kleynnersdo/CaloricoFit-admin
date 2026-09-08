@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { LogOut, Users, Package, BarChart3, Settings, Plus, Edit, Trash2, Calendar, FileText, Bell, CheckCircle, X, Download, HelpCircle, Eye, Printer, AlertTriangle } from 'lucide-react';
+import { LogOut, Users, Package, BarChart3, Settings, Plus, Edit, Trash2, Calendar, FileText, Bell, CheckCircle, X, Download, HelpCircle, Eye, EyeOff, Printer, AlertTriangle, Ban } from 'lucide-react';
+import { emptyToNull } from '../lib/utils';
 import { addDays, format, differenceInDays, startOfDay, startOfWeek, startOfMonth } from 'date-fns';
 import * as XLSX from 'xlsx';
 
@@ -85,13 +86,26 @@ export default function AdminDashboard({ onLogout }: Props) {
 
   // Modal States
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
-  const [productForm, setProductForm] = useState<any>({ name: '', category: 'General', subcategory: '', sku: '', cost_price: 0, sale_price: 0, stock_quantity: 0 });
+  const emptyProductForm = { name: '', category: 'General', subcategory: '', sku: '', barcode: '', flavor: '', cost_price: 0, sale_price: 0, stock_quantity: 0, wholesale_price: 0, min_wholesale_qty: 0 };
+  const emptyCustomerForm = { document_id: '', first_name: '', last_name: '', phone: '', email: '', city: '', loyalty_points: 0 };
+  const [productForm, setProductForm] = useState<any>({ ...emptyProductForm });
   const [inventoryFilterCategory, setInventoryFilterCategory] = useState<string>('ALL');
   const [inventorySort, setInventorySort] = useState<string>('LATEST');
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<any>(null);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [newCategoryDescription, setNewCategoryDescription] = useState("");
   const [subcategoriesList, setSubcategoriesList] = useState<string[]>([]);
+  const [isDeleteCategoryModalOpen, setIsDeleteCategoryModalOpen] = useState(false);
+  const [categoryToDelete, setCategoryToDelete] = useState<any>(null);
+  const [reassignCategoryName, setReassignCategoryName] = useState('General');
+  const [showWorkerPassword, setShowWorkerPassword] = useState(false);
+  const [isAdminCustomerModalOpen, setIsAdminCustomerModalOpen] = useState(false);
+  const [customerForm, setCustomerForm] = useState<any>({ ...emptyCustomerForm });
+  const [customerToDelete, setCustomerToDelete] = useState<any>(null);
+  const [isDeleteCustomerModalOpen, setIsDeleteCustomerModalOpen] = useState(false);
+  const [saleToVoid, setSaleToVoid] = useState<any>(null);
+  const [isVoidSaleModalOpen, setIsVoidSaleModalOpen] = useState(false);
   
   const [isExpenseModalOpen, setIsExpenseModalOpen] = useState(false);
   const [expenseForm, setExpenseForm] = useState<any>({ description: '', amount_usd: 0, frequency: 'monthly', next_due_date: format(new Date(), 'yyyy-MM-dd') });
@@ -681,7 +695,15 @@ export default function AdminDashboard({ onLogout }: Props) {
   const fetchAlerts = async () => {
     const { data } = await supabase.from('recurring_expenses').select('*').eq('is_active', true);
     if (data) {
-      const dueSoon = data.filter(exp => differenceInDays(new Date(exp.next_due_date), new Date()) <= 10);
+      const today = startOfDay(new Date());
+      const expiredOnce = data.filter((exp: any) =>
+        exp.frequency === 'once' && differenceInDays(startOfDay(new Date(exp.next_due_date)), today) < 0
+      );
+      for (const exp of expiredOnce) {
+        await supabase.from('recurring_expenses').update({ is_active: false }).eq('id', exp.id);
+      }
+      const visible = data.filter((exp: any) => !expiredOnce.some((e: any) => e.id === exp.id));
+      const dueSoon = visible.filter((exp: any) => differenceInDays(new Date(exp.next_due_date), new Date()) <= 10);
       setRecurringExpenses(dueSoon);
     }
   };
@@ -708,9 +730,8 @@ export default function AdminDashboard({ onLogout }: Props) {
 
     const { data: salesData } = await supabase
       .from('sales')
-      .select('id, total_usd, cost_usd, created_at, payment_method, seller_id, worker_profiles(first_name, last_name)')
+      .select('id, total_usd, cost_usd, created_at, payment_method, seller_id, customer_id, points_earned, points_redeemed, status, is_wholesale, worker_profiles(first_name, last_name)')
       .gte('created_at', startDate.toISOString())
-      .eq('status', 'COMPLETED')
       .order('created_at', { ascending: false });
 
     const { data: itemsData } = await supabase
@@ -735,8 +756,9 @@ export default function AdminDashboard({ onLogout }: Props) {
     let totalCost = 0;
     if (salesData) {
       salesData.forEach((s: any) => {
+        if (s.status && s.status !== 'COMPLETED') return;
         totalSales += Number(s.total_usd || 0);
-        totalCost += Number(s.cost_usd || 0); // Requires a trigger or manual calculation, we fallback to 0 for now if not set
+        totalCost += Number(s.cost_usd || 0);
       });
       setSalesList(salesData);
     }
@@ -771,46 +793,124 @@ export default function AdminDashboard({ onLogout }: Props) {
   };
 
   const payRecurringExpense = async (expense: any) => {
-    const newDueDate = expense.frequency === 'monthly' ? addDays(new Date(expense.next_due_date), 30) : addDays(new Date(expense.next_due_date), 7);
-    
-    // Registrar el gasto
     await supabase.from('expenses').insert([{
       description: expense.description,
       amount_usd: expense.amount_usd,
       category: 'recurring',
     }]);
 
-    // Actualizar el próximo pago
-    await supabase.from('recurring_expenses').update({ next_due_date: newDueDate.toISOString() }).eq('id', expense.id);
-    
-    showToast(`Gasto ${expense.description} marcado como pagado.`);
+    if (expense.frequency === 'once') {
+      await supabase.from('recurring_expenses').update({ is_active: false }).eq('id', expense.id);
+      showToast(`Alerta de gasto "${expense.description}" marcada como pagada y cerrada.`);
+    } else {
+      const newDueDate = expense.frequency === 'monthly' ? addDays(new Date(expense.next_due_date), 30) : addDays(new Date(expense.next_due_date), 7);
+      await supabase.from('recurring_expenses').update({ next_due_date: newDueDate.toISOString() }).eq('id', expense.id);
+      showToast(`Gasto ${expense.description} marcado como pagado.`);
+    }
     fetchAlerts();
     if (activeTab === 'expenses') fetchRecurringExpensesAll();
   };
 
-  // HANDLERS CRUD
+  const emptyProductPayload = () => ({ ...emptyProductForm });
+
+  const validateProductForm = () => {
+    if (!String(productForm.name || '').trim()) {
+      showToast("El nombre del producto es obligatorio.");
+      return false;
+    }
+    if (!String(productForm.category || '').trim()) {
+      showToast("La categoría es obligatoria.");
+      return false;
+    }
+    if (Number(productForm.cost_price) < 0 || Number(productForm.sale_price) < 0) {
+      showToast("Los precios no pueden ser negativos.");
+      return false;
+    }
+    if (Number(productForm.stock_quantity) < 0) {
+      showToast("El stock no puede ser negativo.");
+      return false;
+    }
+    if (Number(productForm.wholesale_price) < 0 || Number(productForm.min_wholesale_qty) < 0) {
+      showToast("Precio al mayor y cantidad mínima no pueden ser negativos.");
+      return false;
+    }
+    if (Number(productForm.wholesale_price) > 0 && Number(productForm.min_wholesale_qty) < 1) {
+      showToast("Si hay precio al mayor, la cantidad mínima debe ser al menos 1.");
+      return false;
+    }
+    if (Number(productForm.sale_price) < Number(productForm.cost_price)) {
+      showToast("Aviso: el precio de venta es menor que el costo. Se guardará igual.");
+    }
+    return true;
+  };
+
   const handleSaveProduct = async () => {
+    if (!validateProductForm()) return;
+
+    const payload: any = {
+      name: String(productForm.name).trim(),
+      category: productForm.category,
+      subcategory: emptyToNull(productForm.subcategory),
+      flavor: emptyToNull(productForm.flavor),
+      sku: emptyToNull(productForm.sku),
+      barcode: emptyToNull(productForm.barcode),
+      cost_price: Number(productForm.cost_price) || 0,
+      sale_price: Number(productForm.sale_price) || 0,
+      wholesale_price: Number(productForm.wholesale_price) || 0,
+      min_wholesale_qty: Number(productForm.min_wholesale_qty) || 0,
+      stock_quantity: Number(productForm.stock_quantity) || 0,
+    };
+
     if (productForm.id) {
-       const { error } = await supabase.from('products').update(productForm).eq('id', productForm.id);
-       if (error) showToast("Error actualizando: " + error.message);
-       else showToast("Producto actualizado exitosamente.");
-    } else {
-       // Nuevo
-       const { error } = await supabase.from('products').insert([productForm]);
-       if (error) showToast("Error creando: " + error.message);
-       else {
-         // Registro de gasto de inventario inicial
+       const previous = products.find((p: any) => p.id === productForm.id);
+       const { error } = await supabase.from('products').update(payload).eq('id', productForm.id);
+       if (error) {
+         showToast("Error actualizando: " + error.message);
+         return;
+       }
+       const addedStock = Number(payload.stock_quantity) - Number(previous?.stock_quantity || 0);
+       if (addedStock > 0) {
          await supabase.from('expenses').insert([{
-           description: `Ingreso de mercancía: ${productForm.name}`,
-           amount_usd: productForm.cost_price * productForm.stock_quantity,
+           description: `Reposición: ${payload.name}${payload.flavor ? ` (${payload.flavor})` : ''}`,
+           amount_usd: payload.cost_price * addedStock,
            category: 'inventory_purchase'
          }]);
-         showToast("Producto y gasto de mercancía registrados.");
        }
+       showToast("Producto actualizado. Las ventas anteriores conservan su precio y costo.");
+    } else {
+       const { error } = await supabase.from('products').insert([payload]);
+       if (error) {
+         showToast("Error creando: " + error.message);
+         return;
+       }
+       if (payload.stock_quantity > 0) {
+         await supabase.from('expenses').insert([{
+           description: `Ingreso de mercancía: ${payload.name}${payload.flavor ? ` (${payload.flavor})` : ''}`,
+           amount_usd: payload.cost_price * payload.stock_quantity,
+           category: 'inventory_purchase'
+         }]);
+       }
+       showToast("Producto y gasto de mercancía registrados.");
     }
     setIsProductModalOpen(false);
-    setProductForm({ name: '', category: 'General', subcategory: '', sku: '', cost_price: 0, sale_price: 0, stock_quantity: 0 });
+    setProductForm(emptyProductPayload());
     fetchProducts();
+  };
+
+  const openCategoryModal = (cat: any | null = null) => {
+    if (cat) {
+      setEditingCategory(cat);
+      setNewCategoryName(cat.name || '');
+      setNewCategoryDescription(cat.description || '');
+      const kids = productCategories.filter((c: any) => c.parent_category === cat.name).map((c: any) => c.name);
+      setSubcategoriesList(kids.length ? kids : []);
+    } else {
+      setEditingCategory(null);
+      setNewCategoryName('');
+      setNewCategoryDescription('');
+      setSubcategoriesList([]);
+    }
+    setIsCategoryModalOpen(true);
   };
 
   const handleSaveCategory = async () => {
@@ -820,8 +920,53 @@ export default function AdminDashboard({ onLogout }: Props) {
         return;
       }
 
-      // 1. Guardar o verificar Categoría Principal
-      const { data: existingCat } = await supabase.from('product_categories').select('*').eq('name', catTitle).single();
+      if (editingCategory) {
+        const oldName = editingCategory.name;
+        if (catTitle !== oldName) {
+          const { data: clash } = await supabase.from('product_categories').select('id').eq('name', catTitle).maybeSingle();
+          if (clash && clash.id !== editingCategory.id) {
+            showToast("Ya existe otra categoría con ese nombre.");
+            return;
+          }
+          await supabase.from('products').update({ category: catTitle }).eq('category', oldName);
+          await supabase.from('products').update({ subcategory: catTitle }).eq('subcategory', oldName);
+          await supabase.from('product_categories').update({ parent_category: catTitle }).eq('parent_category', oldName);
+        }
+        const { error: catErr } = await supabase.from('product_categories').update({
+          name: catTitle,
+          description: newCategoryDescription.trim() || null,
+        }).eq('id', editingCategory.id);
+        if (catErr) {
+          showToast("Error actualizando categoría: " + catErr.message);
+          return;
+        }
+
+        const existingSubs = productCategories.filter((c: any) => c.parent_category === oldName);
+        const validSubcategories = subcategoriesList.map(s => s.trim()).filter(s => s.length > 0);
+        for (const sub of existingSubs) {
+          if (!validSubcategories.includes(sub.name)) {
+            await supabase.from('products').update({ subcategory: null }).eq('subcategory', sub.name);
+            await supabase.from('product_categories').delete().eq('id', sub.id);
+          }
+        }
+        for (const subTitle of validSubcategories) {
+          const already = existingSubs.find((s: any) => s.name === subTitle);
+          if (!already) {
+            await supabase.from('product_categories').insert([{
+              name: subTitle,
+              description: newCategoryDescription.trim() || null,
+              parent_category: catTitle
+            }]);
+          }
+        }
+        showToast("Categoría actualizada. Los productos se reasignaron al nuevo nombre.");
+        setIsCategoryModalOpen(false);
+        setEditingCategory(null);
+        fetchProducts();
+        return;
+      }
+
+      const { data: existingCat } = await supabase.from('product_categories').select('*').eq('name', catTitle).maybeSingle();
       
       if (!existingCat) {
          const { error: catErr } = await supabase.from('product_categories').insert([{
@@ -835,7 +980,6 @@ export default function AdminDashboard({ onLogout }: Props) {
          }
       }
 
-      // 2. Guardar Subcategorías si hay
       const validSubcategories = subcategoriesList.map(s => s.trim()).filter(s => s.length > 0);
       let firstCreatedSubcat = "";
 
@@ -855,19 +999,39 @@ export default function AdminDashboard({ onLogout }: Props) {
       showToast("Categoría y subcategorías guardadas exitosamente.");
       setIsCategoryModalOpen(false);
       
-      // Auto-seleccionar la categoría y la primera subcategoría creada
       setProductForm(prev => ({
         ...prev,
         category: catTitle,
         subcategory: firstCreatedSubcat || prev.subcategory
       }));
 
-      // Resetear campos
       setNewCategoryName("");
       setNewCategoryDescription("");
       setSubcategoriesList([]);
       
       fetchProducts();
+  };
+
+  const handleConfirmDeleteCategory = async () => {
+    if (!categoryToDelete) return;
+    const oldName = categoryToDelete.name;
+    const target = reassignCategoryName || 'General';
+    await supabase.from('products').update({ category: target }).eq('category', oldName);
+    await supabase.from('products').update({ subcategory: null }).eq('subcategory', oldName);
+    const children = productCategories.filter((c: any) => c.parent_category === oldName);
+    for (const child of children) {
+      await supabase.from('products').update({ subcategory: null }).eq('subcategory', child.name);
+      await supabase.from('product_categories').delete().eq('id', child.id);
+    }
+    const { error } = await supabase.from('product_categories').delete().eq('id', categoryToDelete.id);
+    if (error) {
+      showToast("Error al eliminar categoría: " + error.message);
+      return;
+    }
+    showToast(`Categoría eliminada. Productos reasignados a "${target}".`);
+    setIsDeleteCategoryModalOpen(false);
+    setCategoryToDelete(null);
+    fetchProducts();
   };
 
   const handleDeleteProduct = (product: any) => {
@@ -985,7 +1149,23 @@ export default function AdminDashboard({ onLogout }: Props) {
   };
 
   const handlePayExpense = async (expense: any) => {
-     // Advance the due date
+     if (expense.frequency === 'once') {
+       await supabase.from('expenses').insert([{
+         description: expense.description,
+         amount_usd: expense.amount_usd,
+         category: 'recurring',
+       }]);
+       const { error } = await supabase.from('recurring_expenses').update({ is_active: false }).eq('id', expense.id);
+       if (error) {
+         showToast("Error al procesar pago: " + error.message);
+         return;
+       }
+       showToast(`Alerta "${expense.description}" pagada y cerrada.`);
+       fetchAlerts();
+       if (activeTab === 'expenses') fetchRecurringExpensesAll();
+       return;
+     }
+
      const nextDate = expense.frequency === 'monthly' ? addDays(new Date(expense.next_due_date), 30) : addDays(new Date(expense.next_due_date), 7);
      const { error } = await supabase.from('recurring_expenses').update({ next_due_date: format(nextDate, 'yyyy-MM-dd') }).eq('id', expense.id);
      
@@ -994,19 +1174,37 @@ export default function AdminDashboard({ onLogout }: Props) {
          return;
      }
      
-     // Optionally create an expense record somewhere if we had an expenses log, but for now just move the date as requested.
      showToast(`Gasto ${expense.description} marcado como pagado. Próximo cobro: ${format(nextDate, 'dd/MM/yyyy')}`);
      fetchAlerts();
      if (activeTab === 'expenses') fetchRecurringExpensesAll();
   };
 
   const handleSaveExpense = async () => {
+     if (!String(expenseForm.description || '').trim()) {
+       showToast("La descripción del gasto es obligatoria.");
+       return;
+     }
+     if (Number(expenseForm.amount_usd) <= 0) {
+       showToast("El monto debe ser mayor a 0.");
+       return;
+     }
+     if (!expenseForm.next_due_date) {
+       showToast("La fecha es obligatoria.");
+       return;
+     }
+     const payload = {
+       description: String(expenseForm.description).trim(),
+       amount_usd: Number(expenseForm.amount_usd),
+       frequency: expenseForm.frequency,
+       next_due_date: expenseForm.next_due_date,
+       is_active: true,
+     };
      let error;
      if (expenseForm.id) {
-         const { error: updateError } = await supabase.from('recurring_expenses').update(expenseForm).eq('id', expenseForm.id);
+         const { error: updateError } = await supabase.from('recurring_expenses').update(payload).eq('id', expenseForm.id);
          error = updateError;
      } else {
-         const { error: insertError } = await supabase.from('recurring_expenses').insert([expenseForm]);
+         const { error: insertError } = await supabase.from('recurring_expenses').insert([payload]);
          error = insertError;
      }
 
@@ -1017,7 +1215,7 @@ export default function AdminDashboard({ onLogout }: Props) {
              showToast("Error guardando gasto: " + error.message);
          }
      } else {
-         showToast("Gasto recurrente guardado exitosamente.");
+         showToast(payload.frequency === 'once' ? "Alerta de gasto único guardada." : "Gasto recurrente guardado exitosamente.");
      }
      setIsExpenseModalOpen(false);
      setExpenseForm({ description: '', amount_usd: 0, frequency: 'monthly', next_due_date: format(new Date(), 'yyyy-MM-dd') });
@@ -1052,28 +1250,40 @@ export default function AdminDashboard({ onLogout }: Props) {
   };
 
   const handleSaveWorker = async () => {
+     if (!workerForm.document_id || !workerForm.first_name || !workerForm.last_name) {
+       showToast("Cédula, nombre y apellido son obligatorios.");
+       return;
+     }
+     if (!workerForm.id && (!workerForm.password || String(workerForm.password).length < 6)) {
+       showToast("La contraseña es obligatoria y debe tener al menos 6 caracteres.");
+       return;
+     }
+     if (workerForm.id && workerForm.password && String(workerForm.password).length < 6) {
+       showToast("La nueva contraseña debe tener al menos 6 caracteres.");
+       return;
+     }
+
      if (workerForm.id) {
-       // Updating existing worker profile
-       const { error } = await supabase.from('worker_profiles').update({
+       const updatePayload: any = {
          first_name: workerForm.first_name,
          last_name: workerForm.last_name,
          document_id: workerForm.document_id,
          phone: workerForm.phone,
          role: workerForm.role
-       }).eq('id', workerForm.id);
+       };
+       if (workerForm.password) {
+         updatePayload.password = workerForm.password;
+       }
+       const { error } = await supabase.from('worker_profiles').update(updatePayload).eq('id', workerForm.id);
 
        if (error) {
          showToast("Error al actualizar perfil: " + error.message);
        } else {
-         showToast("Vendedor actualizado exitosamente.");
+         showToast(workerForm.password ? "Vendedor y contraseña actualizados." : "Vendedor actualizado exitosamente.");
          setIsWorkerModalOpen(false);
+         setShowWorkerPassword(false);
          fetchWorkers();
        }
-       return;
-     }
-
-     if (!workerForm.document_id || !workerForm.password || !workerForm.first_name || !workerForm.last_name) {
-       showToast("Cédula, nombre, apellido y contraseña son obligatorios.");
        return;
      }
 
@@ -1147,6 +1357,95 @@ export default function AdminDashboard({ onLogout }: Props) {
     await supabase.from('worker_profiles').delete().eq('id', id);
     showToast("Perfil de vendedor eliminado.");
     fetchWorkers();
+  };
+
+  const handleSaveCustomer = async () => {
+    const documentId = String(customerForm.document_id || '').trim().toUpperCase();
+    const firstName = String(customerForm.first_name || '').trim();
+    const lastName = String(customerForm.last_name || '').trim();
+    const phone = String(customerForm.phone || '').trim();
+    if (!documentId || !firstName || !lastName) {
+      showToast("Cédula, nombre y apellido son obligatorios.");
+      return;
+    }
+    if (!phone) {
+      showToast("El teléfono es obligatorio.");
+      return;
+    }
+    const payload = {
+      document_id: documentId,
+      first_name: firstName,
+      last_name: lastName,
+      phone,
+      email: emptyToNull(customerForm.email),
+      city: emptyToNull(customerForm.city),
+      loyalty_points: Math.max(0, Number(customerForm.loyalty_points) || 0),
+    };
+    if (customerForm.id) {
+      const { error } = await supabase.from('customers').update(payload).eq('id', customerForm.id);
+      if (error) {
+        showToast("Error actualizando cliente: " + error.message);
+        return;
+      }
+      showToast("Cliente actualizado.");
+    } else {
+      const { error } = await supabase.from('customers').insert([payload]);
+      if (error) {
+        showToast("Error creando cliente: " + (error.message.includes('unique') || error.message.includes('duplicate') ? 'Esa cédula ya está registrada.' : error.message));
+        return;
+      }
+      showToast("Cliente creado.");
+    }
+    setIsAdminCustomerModalOpen(false);
+    setCustomerForm({ ...emptyCustomerForm });
+    fetchCustomers();
+  };
+
+  const handleConfirmDeleteCustomer = async () => {
+    if (!customerToDelete) return;
+    const { error } = await supabase.from('customers').delete().eq('id', customerToDelete.id);
+    if (error) {
+      showToast("No se pudo eliminar. Si el cliente tiene ventas, anúlalas o consérvalo en el CRM.");
+      return;
+    }
+    showToast("Cliente eliminado.");
+    setIsDeleteCustomerModalOpen(false);
+    setCustomerToDelete(null);
+    fetchCustomers();
+  };
+
+  const handleConfirmVoidSale = async () => {
+    if (!saleToVoid) return;
+    if (saleToVoid.status === 'VOIDED') {
+      showToast("Esta venta ya está anulada.");
+      setIsVoidSaleModalOpen(false);
+      return;
+    }
+    try {
+      const { data: items, error: itemsErr } = await supabase.from('sale_items').select('*').eq('sale_id', saleToVoid.id);
+      if (itemsErr) throw itemsErr;
+      for (const item of items || []) {
+        const { data: product } = await supabase.from('products').select('id, stock_quantity').eq('id', item.product_id).maybeSingle();
+        if (product) {
+          await supabase.from('products').update({ stock_quantity: Number(product.stock_quantity || 0) + Number(item.quantity || 0) }).eq('id', product.id);
+        }
+      }
+      if (saleToVoid.customer_id) {
+        const { data: customer } = await supabase.from('customers').select('id, loyalty_points').eq('id', saleToVoid.customer_id).maybeSingle();
+        if (customer) {
+          const nextPoints = Math.max(0, Number(customer.loyalty_points || 0) - Number(saleToVoid.points_earned || 0) + Number(saleToVoid.points_redeemed || 0));
+          await supabase.from('customers').update({ loyalty_points: nextPoints }).eq('id', customer.id);
+        }
+      }
+      const { error } = await supabase.from('sales').update({ status: 'VOIDED' }).eq('id', saleToVoid.id);
+      if (error) throw error;
+      showToast("Venta anulada. Se restauró el stock y los puntos.");
+      setIsVoidSaleModalOpen(false);
+      setSaleToVoid(null);
+      calculateMetrics();
+    } catch (err: any) {
+      showToast("Error al anular venta: " + (err.message || err));
+    }
   };
 
   const handleSignOut = async () => {
@@ -1279,22 +1578,35 @@ export default function AdminDashboard({ onLogout }: Props) {
                                 <th className="p-3">Costo</th>
                                 <th className="p-3">Venta</th>
                                 <th className="p-3">Ganancia</th>
+                                <th className="p-3 text-center">Acciones</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-gray-100">
                             {salesList.map(s => {
+                                const isVoided = s.status === 'VOIDED';
                                 const profit = Number(s.total_usd || 0) - Number(s.cost_usd || 0);
                                 return (
-                                <tr key={s.id} className="hover:bg-gray-50 transition-colors">
+                                <tr key={s.id} className={`hover:bg-gray-50 transition-colors ${isVoided ? 'opacity-50' : ''}`}>
                                     <td className="p-3 text-gray-600">{new Date(s.created_at).toLocaleString()}</td>
                                     <td className="p-3 font-medium text-gray-900">{s.worker_profiles?.first_name} {s.worker_profiles?.last_name}</td>
-                                    <td className="p-3 text-gray-600">{s.payment_method || 'CASH_USD'}</td>
+                                    <td className="p-3 text-gray-600">{s.payment_method || 'CASH_USD'}{s.is_wholesale ? ' · Mayor' : ''}</td>
                                     <td className="p-3 text-gray-500">${Number(s.cost_usd || 0).toFixed(2)}</td>
                                     <td className="p-3 font-bold">${Number(s.total_usd || 0).toFixed(2)}</td>
-                                    <td className={`p-3 font-bold ${profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>${profit.toFixed(2)}</td>
+                                    <td className={`p-3 font-bold ${isVoided ? 'text-gray-400' : profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>{isVoided ? 'Anulada' : `$${profit.toFixed(2)}`}</td>
+                                    <td className="p-3 text-center">
+                                      {!isVoided && (
+                                        <button
+                                          onClick={() => { setSaleToVoid(s); setIsVoidSaleModalOpen(true); }}
+                                          className="text-red-500 hover:text-red-700 text-xs font-bold inline-flex items-center gap-1"
+                                          title="Anular esta venta"
+                                        >
+                                          <Ban className="w-3.5 h-3.5" /> Anular
+                                        </button>
+                                      )}
+                                    </td>
                                 </tr>
                             )})}
-                            {salesList.length === 0 && <tr><td colSpan={6} className="p-4 text-center text-gray-500">No hay ventas registradas.</td></tr>}
+                            {salesList.length === 0 && <tr><td colSpan={7} className="p-4 text-center text-gray-500">No hay ventas registradas.</td></tr>}
                         </tbody>
                     </table>
                 </div>
@@ -1338,39 +1650,53 @@ export default function AdminDashboard({ onLogout }: Props) {
                       <option value="STOCK_LOW">Menor Stock</option>
                   </select>
                   <button 
-                    onClick={() => setIsCategoryModalOpen(true)}
+                    onClick={() => openCategoryModal(null)}
                     className="bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-2 rounded-lg font-medium flex items-center gap-2 text-sm border border-gray-300">
                     <Plus className="w-4 h-4"/> Categoría
                   </button>
                   <button 
-                    onClick={() => { setProductForm({ name: '', category: 'General', subcategory: '', sku: '', cost_price: 0, sale_price: 0, stock_quantity: 0 }); setIsProductModalOpen(true); }}
+                    onClick={() => { setProductForm(emptyProductPayload()); setIsProductModalOpen(true); }}
                     className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 text-sm">
                     <Plus className="w-4 h-4"/> Mercancía
                   </button>
               </div>
             </div>
+            {productCategories.filter((c: any) => !c.parent_category).length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-4">
+                {productCategories.filter((c: any) => !c.parent_category).map((c: any) => (
+                  <div key={c.id} className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm">
+                    <span className="font-medium text-gray-800">{c.name}</span>
+                    <button onClick={() => openCategoryModal(c)} className="text-blue-500 hover:text-blue-700 p-0.5" title="Editar categoría"><Edit className="w-3.5 h-3.5"/></button>
+                    <button onClick={() => { setCategoryToDelete(c); setReassignCategoryName('General'); setIsDeleteCategoryModalOpen(true); }} className="text-red-500 hover:text-red-700 p-0.5" title="Eliminar categoría"><Trash2 className="w-3.5 h-3.5"/></button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
               <table className="w-full text-left">
                 <thead className="bg-gray-50 border-b border-gray-200 text-sm text-gray-500 uppercase tracking-wider">
                   <tr>
                     <th className="p-4 font-medium">Producto</th>
                     <th className="p-4 font-medium">Categoría</th>
+                    <th className="p-4 font-medium">Sabor / Tipo</th>
                     <th className="p-4 font-medium text-center">Stock</th>
                     <th className="p-4 font-medium text-right">Costo Base</th>
                     <th className="p-4 font-medium text-right">Precio Venta</th>
+                    <th className="p-4 font-medium text-right">Mayor</th>
                     <th className="p-4 font-medium text-center">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {filteredProducts.length === 0 ? (
-                    <tr><td colSpan={6} className="p-8 text-center text-gray-500">No hay productos registrados en esta categoría.</td></tr>
+                    <tr><td colSpan={8} className="p-8 text-center text-gray-500">No hay productos registrados en esta categoría.</td></tr>
                   ) : (
                     filteredProducts.map(p => (
                       <tr key={p.id}>
-                        <td className="p-4 font-medium">{p.name}<div className="text-xs text-gray-400 font-mono">{p.sku}</div></td>
+                        <td className="p-4 font-medium">{p.name}<div className="text-xs text-gray-400 font-mono">{p.sku || p.barcode || ''}</div></td>
                         <td className="p-4 text-sm text-gray-600">
                             {p.category} {p.subcategory && <span className="text-gray-400">/ {p.subcategory}</span>}
                         </td>
+                        <td className="p-4 text-sm text-orange-700">{p.flavor || '—'}</td>
                         <td className="p-4 text-center">
                           <span className={`px-2 py-1 rounded text-xs font-bold ${p.stock_quantity > 10 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                             {p.stock_quantity}
@@ -1378,8 +1704,9 @@ export default function AdminDashboard({ onLogout }: Props) {
                         </td>
                         <td className="p-4 text-right text-gray-500">${p.cost_price}</td>
                         <td className="p-4 text-right font-bold">${p.sale_price}</td>
+                        <td className="p-4 text-right text-sm text-gray-600">{Number(p.wholesale_price) > 0 ? `$${p.wholesale_price} / ${p.min_wholesale_qty || 1}u` : '—'}</td>
                         <td className="p-4 text-center">
-                           <button onClick={() => { setProductForm(p); setIsProductModalOpen(true); }} className="text-blue-500 hover:text-blue-700 mx-2" title="Editar"><Edit className="w-4 h-4"/></button>
+                           <button onClick={() => { setProductForm({ ...emptyProductForm, ...p, flavor: p.flavor || '', barcode: p.barcode || '', wholesale_price: p.wholesale_price || 0, min_wholesale_qty: p.min_wholesale_qty || 0 }); setIsProductModalOpen(true); }} className="text-blue-500 hover:text-blue-700 mx-2" title="Editar"><Edit className="w-4 h-4"/></button>
                            <button onClick={() => handleDeleteProduct(p)} className="text-red-500 hover:text-red-700 mx-2" title="Eliminar"><Trash2 className="w-4 h-4"/></button>
                         </td>
                       </tr>
@@ -1396,7 +1723,7 @@ export default function AdminDashboard({ onLogout }: Props) {
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-gray-900">Gestión de Vendedores</h2>
               <button 
-                onClick={() => { setWorkerForm({ email: '', password: '', first_name: '', last_name: '', document_id: '', phone: '', role: 'seller' }); setIsWorkerModalOpen(true); }}
+                onClick={() => { setWorkerForm({ email: '', password: '', first_name: '', last_name: '', document_id: '', phone: '', role: 'seller' }); setShowWorkerPassword(false); setIsWorkerModalOpen(true); }}
                 className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2"
               >
                 <Plus className="w-5 h-5"/> Agregar Vendedor
@@ -1439,6 +1766,7 @@ export default function AdminDashboard({ onLogout }: Props) {
                           });
                           // Store ID to know we are editing instead of creating newly
                           setWorkerForm(prev => ({...prev, id: w.id}));
+                          setShowWorkerPassword(false);
                           setIsWorkerModalOpen(true);
                         }} 
                         className="text-gray-500 hover:text-blue-600 p-1" 
@@ -1485,6 +1813,12 @@ export default function AdminDashboard({ onLogout }: Props) {
                  >
                    🌟
                  </button>
+                 <button
+                   onClick={() => { setCustomerForm({ ...emptyCustomerForm }); setIsAdminCustomerModalOpen(true); }}
+                   className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2"
+                 >
+                   <Plus className="w-5 h-5"/> Cliente
+                 </button>
                  <button 
                    onClick={exportCustomers}
                    className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors"
@@ -1501,6 +1835,7 @@ export default function AdminDashboard({ onLogout }: Props) {
                     <th className="p-4 font-medium">Cédula</th>
                     <th className="p-4 font-medium">Contacto / Ciudad</th>
                     <th className="p-4 font-medium text-center">Puntos Fidelidad</th>
+                    <th className="p-4 font-medium text-center">Acciones</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -1510,9 +1845,13 @@ export default function AdminDashboard({ onLogout }: Props) {
                       <td className="p-4 font-mono text-gray-500">{c.document_id}</td>
                       <td className="p-4 text-sm text-gray-500">{c.phone}<br/>{c.email} {c.city ? `• ${c.city}` : ''}</td>
                       <td className="p-4 text-center font-bold text-orange-600">{c.loyalty_points} 🌟</td>
+                      <td className="p-4 text-center">
+                        <button onClick={() => { setCustomerForm({ ...c, loyalty_points: c.loyalty_points || 0 }); setIsAdminCustomerModalOpen(true); }} className="text-blue-500 hover:text-blue-700 mx-2" title="Editar"><Edit className="w-4 h-4"/></button>
+                        <button onClick={() => { setCustomerToDelete(c); setIsDeleteCustomerModalOpen(true); }} className="text-red-500 hover:text-red-700 mx-2" title="Eliminar"><Trash2 className="w-4 h-4"/></button>
+                      </td>
                     </tr>
                   ))}
-                  {filteredCustomers.length === 0 && <tr><td colSpan={4} className="p-8 text-center text-gray-500">No se encontraron clientes.</td></tr>}
+                  {filteredCustomers.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-gray-500">No se encontraron clientes.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -1547,16 +1886,21 @@ export default function AdminDashboard({ onLogout }: Props) {
                            </div>
                            <div className="text-2xl font-bold text-gray-900 mb-2">${exp.amount_usd}</div>
                            <div className={`text-sm ${differenceInDays(new Date(exp.next_due_date), new Date()) <= 3 ? 'text-red-500 font-bold' : 'text-gray-500'}`}>
-                             Próximo pago: {new Date(exp.next_due_date).toLocaleDateString()}
+                             {exp.frequency === 'once' ? 'Fecha de alerta' : 'Próximo pago'}: {new Date(exp.next_due_date).toLocaleDateString()}
                            </div>
-                           <div className="text-sm text-gray-500 uppercase tracking-widest mt-1">Frecuencia: {exp.frequency === 'monthly' ? 'Mensual' : 'Semanal'}</div>
+                           <div className="text-sm text-gray-500 uppercase tracking-widest mt-1">
+                             Frecuencia: {exp.frequency === 'monthly' ? 'Mensual' : exp.frequency === 'weekly' ? 'Semanal' : 'Una sola vez'}
+                             {exp.is_active === false ? ' · Cerrada' : ''}
+                           </div>
                         </div>
+                        {exp.is_active !== false && (
                         <button 
                           onClick={() => handlePayExpense(exp)}
                           className="w-full mt-4 bg-orange-100 hover:bg-orange-200 text-orange-800 font-bold py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
                         >
                           <CheckCircle className="w-4 h-4"/> Pagar Individual
                         </button>
+                        )}
                     </div>
                 ))}
             </div>
@@ -1812,20 +2156,16 @@ export default function AdminDashboard({ onLogout }: Props) {
                   <h3 className="font-bold text-lg">{productForm.id ? 'Editar Producto' : 'Ingresar Mercancía'}</h3>
                   <button onClick={() => setIsProductModalOpen(false)}><X className="w-5 h-5 text-gray-500"/></button>
                </div>
-               <div className="p-4 space-y-4">
+               <div className="p-4 space-y-4 max-h-[80vh] overflow-y-auto">
                   <div><label className="block text-sm font-medium mb-1">Nombre</label><input type="text" className="w-full px-3 py-2 border rounded" value={productForm.name} onChange={e => setProductForm({...productForm, name: e.target.value})} /></div>
+                  <div><label className="block text-sm font-medium mb-1">Sabor / Tipo / Variante</label><input type="text" className="w-full px-3 py-2 border rounded" placeholder="Ej. Fresa, Chocolate, 5 lbs" value={productForm.flavor || ''} onChange={e => setProductForm({...productForm, flavor: e.target.value})} /></div>
                   <div className="grid grid-cols-2 gap-4">
                       <div>
                           <div className="flex justify-between items-center mb-1">
                             <label className="block text-sm font-medium">Categoría</label>
                             <button
                               type="button"
-                              onClick={() => {
-                                setNewCategoryName('');
-                                setNewCategoryDescription('');
-                                setSubcategoriesList([]);
-                                setIsCategoryModalOpen(true);
-                              }}
+                              onClick={() => openCategoryModal(null)}
                               className="text-xs text-orange-600 hover:text-orange-700 font-bold flex items-center gap-0.5"
                             >
                               <Plus className="w-3 h-3" /> Crear
@@ -1833,10 +2173,7 @@ export default function AdminDashboard({ onLogout }: Props) {
                           </div>
                           <select className="w-full px-3 py-2 border rounded" value={productForm.category} onChange={e => {
                               if (e.target.value === '__NEW_CAT__') {
-                                setNewCategoryName('');
-                                setNewCategoryDescription('');
-                                setSubcategoriesList([]);
-                                setIsCategoryModalOpen(true);
+                                openCategoryModal(null);
                               } else {
                                 setProductForm({...productForm, category: e.target.value, subcategory: ''});
                               }
@@ -1859,13 +2196,22 @@ export default function AdminDashboard({ onLogout }: Props) {
                       </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
-                    <div><label className="block text-sm font-medium mb-1">SKU</label><input type="text" className="w-full px-3 py-2 border rounded" value={productForm.sku} onChange={e => setProductForm({...productForm, sku: e.target.value})} /></div>
-                    <div><label className="block text-sm font-medium mb-1">Stock Inicial</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.stock_quantity} onChange={e => setProductForm({...productForm, stock_quantity: Number(e.target.value)})} /></div>
+                    <div><label className="block text-sm font-medium mb-1">SKU</label><input type="text" className="w-full px-3 py-2 border rounded" value={productForm.sku || ''} onChange={e => setProductForm({...productForm, sku: e.target.value})} /></div>
+                    <div><label className="block text-sm font-medium mb-1">Código de barras</label><input type="text" className="w-full px-3 py-2 border rounded font-mono" value={productForm.barcode || ''} onChange={e => setProductForm({...productForm, barcode: e.target.value})} /></div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
+                    <div><label className="block text-sm font-medium mb-1">Stock</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.stock_quantity} onChange={e => setProductForm({...productForm, stock_quantity: Number(e.target.value)})} /></div>
                     <div><label className="block text-sm font-medium mb-1">Costo Base (USD)</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.cost_price} onChange={e => setProductForm({...productForm, cost_price: Number(e.target.value)})} /></div>
-                    <div><label className="block text-sm font-medium mb-1">Precio Venta (USD)</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.sale_price} onChange={e => setProductForm({...productForm, sale_price: Number(e.target.value)})} /></div>
                   </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div><label className="block text-sm font-medium mb-1">Precio Venta (USD)</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.sale_price} onChange={e => setProductForm({...productForm, sale_price: Number(e.target.value)})} /></div>
+                    <div><label className="block text-sm font-medium mb-1">Precio al mayor (USD)</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.wholesale_price || 0} onChange={e => setProductForm({...productForm, wholesale_price: Number(e.target.value)})} /></div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Cantidad mínima al mayor</label>
+                    <input type="number" className="w-full px-3 py-2 border rounded" value={productForm.min_wholesale_qty || 0} onChange={e => setProductForm({...productForm, min_wholesale_qty: Number(e.target.value)})} />
+                  </div>
+                  <p className="text-xs text-gray-500">Cambiar costo o precio no modifica ventas ni ganancias ya registradas.</p>
                   <button onClick={handleSaveProduct} className="w-full bg-black text-white font-bold py-3 pt-3 rounded-lg mt-4">Guardar Producto</button>
                </div>
             </div>
@@ -1876,7 +2222,7 @@ export default function AdminDashboard({ onLogout }: Props) {
           <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
              <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
                 <div className="flex justify-between items-center p-4 border-b border-gray-200">
-                   <h3 className="font-bold text-lg">Nueva Categoría de Productos</h3>
+                   <h3 className="font-bold text-lg">{editingCategory ? 'Editar Categoría' : 'Nueva Categoría de Productos'}</h3>
                    <button onClick={() => setIsCategoryModalOpen(false)}><X className="w-5 h-5 text-gray-500"/></button>
                 </div>
                 <div className="p-4 space-y-4">
@@ -1957,7 +2303,7 @@ export default function AdminDashboard({ onLogout }: Props) {
                      </div>
                    )}
 
-                   <button onClick={handleSaveCategory} className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-lg mt-2 transition-colors">Guardar Categoría</button>
+                   <button onClick={handleSaveCategory} className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-3 rounded-lg mt-2 transition-colors">{editingCategory ? 'Guardar Cambios' : 'Guardar Categoría'}</button>
                 </div>
              </div>
           </div>
@@ -2112,7 +2458,7 @@ export default function AdminDashboard({ onLogout }: Props) {
          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
                <div className="flex justify-between items-center p-4 border-b border-gray-200">
-                  <h3 className="font-bold text-lg">Nuevo Gasto Fijo</h3>
+                  <h3 className="font-bold text-lg">{expenseForm.id ? 'Editar Gasto' : 'Nuevo Gasto'}</h3>
                   <button onClick={() => setIsExpenseModalOpen(false)}><X className="w-5 h-5 text-gray-500"/></button>
                </div>
                <div className="p-4 space-y-4">
@@ -2123,9 +2469,13 @@ export default function AdminDashboard({ onLogout }: Props) {
                       <select className="w-full px-3 py-2 border rounded" value={expenseForm.frequency} onChange={e => setExpenseForm({...expenseForm, frequency: e.target.value})}>
                           <option value="monthly">Mensual</option>
                           <option value="weekly">Semanal</option>
+                          <option value="once">Una sola vez (alerta)</option>
                       </select>
                   </div>
-                  <div><label className="block text-sm font-medium mb-1">Próxima Fecha de Pago</label><input type="date" className="w-full px-3 py-2 border rounded" value={expenseForm.next_due_date} onChange={e => setExpenseForm({...expenseForm, next_due_date: e.target.value})} /></div>
+                  <div><label className="block text-sm font-medium mb-1">{expenseForm.frequency === 'once' ? 'Fecha de la alerta' : 'Próxima Fecha de Pago'}</label><input type="date" className="w-full px-3 py-2 border rounded" value={expenseForm.next_due_date} onChange={e => setExpenseForm({...expenseForm, next_due_date: e.target.value})} /></div>
+                  {expenseForm.frequency === 'once' && (
+                    <p className="text-xs text-gray-500">La alerta desaparece sola cuando pasa esa fecha, o al marcarla como pagada.</p>
+                  )}
                   <button onClick={handleSaveExpense} className="w-full bg-black text-white font-bold py-3 pt-3 rounded-lg mt-4">Registrar Gasto</button>
                </div>
             </div>
@@ -2137,7 +2487,7 @@ export default function AdminDashboard({ onLogout }: Props) {
          <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
                <div className="flex justify-between items-center p-4 border-b border-gray-200">
-                  <h3 className="font-bold text-lg">Nuevo Vendedor</h3>
+                  <h3 className="font-bold text-lg">{workerForm.id ? 'Editar Vendedor' : 'Nuevo Vendedor'}</h3>
                   <button onClick={() => setIsWorkerModalOpen(false)}><X className="w-5 h-5 text-gray-500"/></button>
                </div>
                <div className="p-4 space-y-4">
@@ -2156,12 +2506,28 @@ export default function AdminDashboard({ onLogout }: Props) {
                       <input type="email" disabled={!!workerForm.id} className="w-full px-3 py-2 border rounded disabled:bg-gray-100 disabled:text-gray-500" value={workerForm.email} onChange={e => setWorkerForm({...workerForm, email: e.target.value})} placeholder="Opcional" />
                     </div>
                   </div>
-                  {!workerForm.id && (
-                    <div>
-                      <label className="block text-sm font-medium mb-1">Contraseña</label>
-                      <input type="password" minLength={6} required className="w-full px-3 py-2 border rounded" value={workerForm.password} onChange={e => setWorkerForm({...workerForm, password: e.target.value})} />
+                  <div>
+                      <label className="block text-sm font-medium mb-1">{workerForm.id ? 'Contraseña (dejar vacío para no cambiar)' : 'Contraseña'}</label>
+                      <div className="relative">
+                        <input
+                          type={showWorkerPassword ? 'text' : 'password'}
+                          minLength={workerForm.id ? undefined : 6}
+                          required={!workerForm.id}
+                          className="w-full px-3 py-2 pr-10 border rounded"
+                          value={workerForm.password}
+                          onChange={e => setWorkerForm({...workerForm, password: e.target.value})}
+                          placeholder={workerForm.id ? '••••••••' : ''}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowWorkerPassword(v => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-800"
+                          title={showWorkerPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                        >
+                          {showWorkerPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
                     </div>
-                  )}
                   <div className="grid grid-cols-2 gap-4">
                     <div><label className="block text-sm font-medium mb-1">Nombre</label><input type="text" required className="w-full px-3 py-2 border rounded" value={workerForm.first_name} onChange={e => setWorkerForm({...workerForm, first_name: e.target.value})} /></div>
                     <div><label className="block text-sm font-medium mb-1">Apellido</label><input type="text" required className="w-full px-3 py-2 border rounded" value={workerForm.last_name} onChange={e => setWorkerForm({...workerForm, last_name: e.target.value})} /></div>
@@ -2698,6 +3064,76 @@ export default function AdminDashboard({ onLogout }: Props) {
              </div>
           </div>
        )}
+
+      {isDeleteCategoryModalOpen && categoryToDelete && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <h3 className="font-bold text-lg">Eliminar categoría "{categoryToDelete.name}"</h3>
+            <p className="text-sm text-gray-600">Los productos de esta categoría se reasignarán a:</p>
+            <select className="w-full px-3 py-2 border rounded" value={reassignCategoryName} onChange={e => setReassignCategoryName(e.target.value)}>
+              <option value="General">General</option>
+              {productCategories.filter((c: any) => !c.parent_category && c.id !== categoryToDelete.id).map((c: any) => (
+                <option key={c.id} value={c.name}>{c.name}</option>
+              ))}
+            </select>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setIsDeleteCategoryModalOpen(false)} className="px-4 py-2 bg-gray-100 rounded-lg font-medium">Cancelar</button>
+              <button onClick={handleConfirmDeleteCategory} className="px-4 py-2 bg-red-600 text-white rounded-lg font-bold">Eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isAdminCustomerModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
+            <div className="flex justify-between items-center p-4 border-b">
+              <h3 className="font-bold text-lg">{customerForm.id ? 'Editar Cliente' : 'Nuevo Cliente'}</h3>
+              <button onClick={() => setIsAdminCustomerModalOpen(false)}><X className="w-5 h-5 text-gray-500"/></button>
+            </div>
+            <div className="p-4 space-y-3">
+              <div><label className="block text-sm font-medium mb-1">Cédula</label><input className="w-full px-3 py-2 border rounded font-mono" value={customerForm.document_id} onChange={e => setCustomerForm({...customerForm, document_id: e.target.value})} disabled={!!customerForm.id} /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-sm font-medium mb-1">Nombre</label><input className="w-full px-3 py-2 border rounded" value={customerForm.first_name} onChange={e => setCustomerForm({...customerForm, first_name: e.target.value})} /></div>
+                <div><label className="block text-sm font-medium mb-1">Apellido</label><input className="w-full px-3 py-2 border rounded" value={customerForm.last_name} onChange={e => setCustomerForm({...customerForm, last_name: e.target.value})} /></div>
+              </div>
+              <div><label className="block text-sm font-medium mb-1">Teléfono</label><input className="w-full px-3 py-2 border rounded" value={customerForm.phone || ''} onChange={e => setCustomerForm({...customerForm, phone: e.target.value})} /></div>
+              <div className="grid grid-cols-2 gap-3">
+                <div><label className="block text-sm font-medium mb-1">Correo</label><input type="email" className="w-full px-3 py-2 border rounded" value={customerForm.email || ''} onChange={e => setCustomerForm({...customerForm, email: e.target.value})} /></div>
+                <div><label className="block text-sm font-medium mb-1">Ciudad</label><input className="w-full px-3 py-2 border rounded" value={customerForm.city || ''} onChange={e => setCustomerForm({...customerForm, city: e.target.value})} /></div>
+              </div>
+              <div><label className="block text-sm font-medium mb-1">Puntos</label><input type="number" className="w-full px-3 py-2 border rounded" value={customerForm.loyalty_points || 0} onChange={e => setCustomerForm({...customerForm, loyalty_points: Number(e.target.value)})} /></div>
+              <button onClick={handleSaveCustomer} className="w-full bg-black text-white font-bold py-3 rounded-lg">Guardar Cliente</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isDeleteCustomerModalOpen && customerToDelete && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <h3 className="font-bold text-lg">Eliminar cliente</h3>
+            <p className="text-sm text-gray-600">¿Eliminar a {customerToDelete.first_name} {customerToDelete.last_name} ({customerToDelete.document_id})?</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setIsDeleteCustomerModalOpen(false)} className="px-4 py-2 bg-gray-100 rounded-lg font-medium">Cancelar</button>
+              <button onClick={handleConfirmDeleteCustomer} className="px-4 py-2 bg-red-600 text-white rounded-lg font-bold">Eliminar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isVoidSaleModalOpen && saleToVoid && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6 space-y-4">
+            <h3 className="font-bold text-lg text-red-700">Anular venta</h3>
+            <p className="text-sm text-gray-600">Se restaurará el stock y los puntos de fidelidad. Esta venta dejará de contar en las ganancias. El monto histórico (${Number(saleToVoid.total_usd || 0).toFixed(2)}) no se reescribe: queda anulada.</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setIsVoidSaleModalOpen(false)} className="px-4 py-2 bg-gray-100 rounded-lg font-medium">Cancelar</button>
+              <button onClick={handleConfirmVoidSale} className="px-4 py-2 bg-red-600 text-white rounded-lg font-bold">Anular venta</button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

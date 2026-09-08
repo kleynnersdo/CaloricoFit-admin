@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { ShoppingCart, Search, Trash2, Camera, UserPlus, CreditCard, ChevronDown, Check, LogOut, X, AlertCircle, Coins } from "lucide-react";
-import { Product, CartItem, Customer, PaymentMethod } from "../types";
+import { Product, CartItem, Customer, PaymentMethod, lineUnitPrice } from "../types";
 import { GLOBAL_CONFIG, cn } from "../lib/utils";
 import BarcodeScanner from "./BarcodeScanner";
 import { supabase } from "../lib/supabase";
@@ -64,6 +64,7 @@ export default function POS({ onLogout }: POSProps) {
     }
   }, [isCierreCajaModalOpen]);
   const [searchTerm, setSearchTerm] = useState("");
+  const [isWholesaleMode, setIsWholesaleMode] = useState(false);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [inventory, setInventory] = useState<Product[]>([]);
@@ -217,35 +218,54 @@ export default function POS({ onLogout }: POSProps) {
   
   // Buscar productos dinámicamente
   const searchResults = searchTerm.length >= 2 
-    ? inventory.filter(p => 
-        p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        (p.barcode && p.barcode.includes(searchTerm)) || 
-        (p.sku && p.sku.toLowerCase().includes(searchTerm.toLowerCase()))
-      )
+    ? inventory.filter(p => {
+        const q = searchTerm.toLowerCase();
+        return (
+          p.name.toLowerCase().includes(q) ||
+          (p.flavor || '').toLowerCase().includes(q) ||
+          (p.barcode && p.barcode.includes(searchTerm)) ||
+          (p.sku && p.sku.toLowerCase().includes(q))
+        );
+      })
     : [];
 
   const handleAddToCart = (product: Product) => {
+    const wantsWholesale = isWholesaleMode && Number(product.wholesale_price) > 0;
+    if (isWholesaleMode && !wantsWholesale) {
+      showToast("Este producto no tiene precio al mayor configurado. Se agregó a precio de venta.");
+    }
+    const minQty = wantsWholesale ? Math.max(1, Number(product.min_wholesale_qty) || 1) : 1;
+
     setCart(prev => {
-      const existing = prev.find(item => item.product.id === product.id);
+      const existing = prev.find(item => item.product.id === product.id && !!item.isWholesale === wantsWholesale);
       if (existing) {
-        if (existing.quantity >= product.stock_quantity) {
+        const nextQty = existing.quantity + 1;
+        if (nextQty > product.stock_quantity) {
           showToast(`Stock insuficiente. Solo quedan ${product.stock_quantity} unidades.`);
           return prev;
         }
-        return prev.map(item => item.product.id === product.id ? { ...item, quantity: item.quantity + 1 } : item);
+        return prev.map(item =>
+          item.product.id === product.id && !!item.isWholesale === wantsWholesale
+            ? { ...item, quantity: nextQty }
+            : item
+        );
       }
       if (product.stock_quantity <= 0) {
         showToast("Producto agotado.");
         return prev;
       }
-      return [...prev, { product, quantity: 1 }];
+      if (minQty > product.stock_quantity) {
+        showToast(`Stock insuficiente para la cantidad mínima al mayor (${minQty}).`);
+        return prev;
+      }
+      return [...prev, { product, quantity: minQty, isWholesale: wantsWholesale }];
     });
     setSearchTerm("");
   };
 
-  const handleUpdateQuantity = (id: string, qty: number) => {
+  const handleUpdateQuantity = (id: string, qty: number, isWholesale = false) => {
     if (qty <= 0) {
-      setCart(prev => prev.filter(item => item.product.id !== id));
+      setCart(prev => prev.filter(item => !(item.product.id === id && !!item.isWholesale === isWholesale)));
       return;
     }
     const product = inventory.find(p => p.id === id);
@@ -253,7 +273,18 @@ export default function POS({ onLogout }: POSProps) {
         showToast(`Stock insuficiente. Max: ${product.stock_quantity}`);
         return;
     }
-    setCart(prev => prev.map(item => item.product.id === id ? { ...item, quantity: qty } : item));
+    if (isWholesale && product) {
+      const minQty = Math.max(1, Number(product.min_wholesale_qty) || 1);
+      if (qty < minQty) {
+        showToast(`Cantidad mínima al mayor: ${minQty}`);
+        return;
+      }
+    }
+    setCart(prev => prev.map(item =>
+      item.product.id === id && !!item.isWholesale === isWholesale
+        ? { ...item, quantity: qty }
+        : item
+    ));
   };
 
   const handleBarcodeScan = (text: string) => {
@@ -326,8 +357,9 @@ export default function POS({ onLogout }: POSProps) {
     }
   };
 
-  // Cálculos Multi-moneda
-  const subtotalUSD = cart.reduce((sum, item) => sum + (item.product.sale_price * item.quantity), 0);
+  // Cálculos Multi-moneda (precio unitario snapshot: retail o mayor)
+  const subtotalUSD = cart.reduce((sum, item) => sum + (lineUnitPrice(item) * item.quantity), 0);
+  const cartHasWholesale = cart.some(item => item.isWholesale);
   
   const discountPercentage = selectedPaymentMethod ? (selectedPaymentMethod.discount_percentage || 0) / 100 : 0;
   
@@ -576,6 +608,8 @@ export default function POS({ onLogout }: POSProps) {
       let sale: any = null;
       let saleError: any = null;
 
+      const pointsToSubtract = (!isMultiCurrency && selectedPaymentMethod && selectedPaymentMethod.currency === 'POINTS') ? pointsRequired : effectivePointsToRedeem;
+
       const salePayload = {
         seller_id: user?.id,
         customer_id: customer.id,
@@ -587,7 +621,10 @@ export default function POS({ onLogout }: POSProps) {
         payment_method: paymentMethodName,
         currency_used: currencyUsed,
         exchange_rate_applied: rateToSave,
-        points_earned: pointsEarned
+        points_earned: pointsEarned,
+        points_redeemed: pointsToSubtract || 0,
+        is_wholesale: cartHasWholesale,
+        status: 'COMPLETED',
       };
 
       const res = await supabase.from('sales').insert([salePayload]).select().single();
@@ -597,6 +634,7 @@ export default function POS({ onLogout }: POSProps) {
       if (saleError) {
         const fallbackPayload = { ...salePayload };
         delete (fallbackPayload as any).surcharge_usd;
+        delete (fallbackPayload as any).is_wholesale;
         const res2 = await supabase.from('sales').insert([fallbackPayload]).select().single();
         sale = res2.data;
         saleError = res2.error;
@@ -604,14 +642,18 @@ export default function POS({ onLogout }: POSProps) {
 
       if (saleError) throw saleError;
 
-      const saleItems = cart.map((item) => ({
-          sale_id: sale.id,
-          product_id: item.product.id,
-          quantity: item.quantity,
-          unit_price_usd: item.product.sale_price,
-          unit_cost_usd: item.product.cost_price,
-          subtotal_usd: item.product.sale_price * item.quantity
-      }));
+      // Snapshot de precio/costo al momento de la venta (no se altera si cambia el producto después)
+      const saleItems = cart.map((item) => {
+          const unit = lineUnitPrice(item);
+          return {
+            sale_id: sale.id,
+            product_id: item.product.id,
+            quantity: item.quantity,
+            unit_price_usd: unit,
+            unit_cost_usd: item.product.cost_price,
+            subtotal_usd: unit * item.quantity
+          };
+      });
 
       const { error: itemsError } = await supabase.from('sale_items').insert(saleItems);
       if (itemsError) throw itemsError;
@@ -624,12 +666,10 @@ export default function POS({ onLogout }: POSProps) {
         }
       }
       
-      // Actualizar puntos del cliente
-      const pointsToSubtract = (!isMultiCurrency && selectedPaymentMethod && selectedPaymentMethod.currency === 'POINTS') ? pointsRequired : effectivePointsToRedeem;
       const newLoyaltyPoints = (customer.loyalty_points || 0) + pointsEarned - pointsToSubtract;
       await supabase.from('customers').update({ loyalty_points: newLoyaltyPoints }).eq('id', customer.id);
 
-      showToast("Venta procesada exitosamente.");
+      showToast(cartHasWholesale ? "Venta al mayor procesada." : "Venta procesada exitosamente.");
       setCart([]);
       setCustomer(null);
       setAppliedReward(false);
@@ -704,10 +744,12 @@ export default function POS({ onLogout }: POSProps) {
                     <div className="col-span-4 text-right">TOTAL (Bs)</div>
                   </div>
                   {cart.map(item => (
-                    <div key={item.product.id} className="grid grid-cols-12">
+                    <div key={`${item.product.id}-${item.isWholesale ? 'w' : 'r'}`} className="grid grid-cols-12">
                       <div className="col-span-2">{item.quantity}x</div>
-                      <div className="col-span-6 line-clamp-1 truncate pr-2">{item.product.name}</div>
-                      <div className="col-span-4 text-right">Bs. {Number(item.quantity * item.product.sale_price * markupMultiplier * actualOficialBCV || 0).toFixed(2)}</div>
+                      <div className="col-span-6 line-clamp-1 truncate pr-2">
+                        {item.product.name}{item.product.flavor ? ` (${item.product.flavor})` : ''}{item.isWholesale ? ' · MAYOR' : ''}
+                      </div>
+                      <div className="col-span-4 text-right">Bs. {Number(item.quantity * lineUnitPrice(item) * markupMultiplier * actualOficialBCV || 0).toFixed(2)}</div>
                     </div>
                   ))}
                 </div>
@@ -1314,6 +1356,18 @@ export default function POS({ onLogout }: POSProps) {
             <span className="text-orange-500">Calórico Fit</span> POS
           </h1>
           <div className="flex gap-2">
+            <button
+              onClick={() => setIsWholesaleMode(v => !v)}
+              className={cn(
+                "flex items-center gap-2 text-sm font-bold px-4 py-2 rounded-lg border transition-colors",
+                isWholesaleMode
+                  ? "bg-purple-600 text-white border-purple-600"
+                  : "text-purple-700 bg-purple-50 border-purple-200 hover:bg-purple-100"
+              )}
+              title="Activa precios al mayor al agregar productos"
+            >
+              {isWholesaleMode ? 'Modo mayor ON' : 'Venta al mayor'}
+            </button>
             <button 
               onClick={() => setIsCierreCajaModalOpen(true)}
               className="flex items-center gap-2 text-sm font-bold text-orange-600 hover:text-white hover:bg-orange-500 transition-colors bg-orange-50 px-4 py-2 rounded-lg border border-orange-200"
@@ -1336,7 +1390,7 @@ export default function POS({ onLogout }: POSProps) {
               <input 
                 ref={searchInputRef}
                 type="text" 
-                placeholder="Busca por nombre, SKU o escanea código de barra... [F2 para WebCam]" 
+                placeholder="Busca por nombre, sabor, SKU o escanea código de barra... [F2 para WebCam]" 
                 className="w-full text-lg pl-12 pr-4 py-4 rounded-xl border-2 border-gray-200 focus:border-orange-500 focus:ring-0 outline-none transition-colors bg-white shadow-sm"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
@@ -1385,7 +1439,10 @@ export default function POS({ onLogout }: POSProps) {
                 >
                   <div className="col-span-2 text-sm text-gray-500 font-mono">{product.sku}</div>
                   <div className="col-span-6 font-medium text-gray-900 group-hover:text-orange-600 transition-colors">
-                    <div>{product.name}</div>
+                    <div>
+                      {product.name}
+                      {product.flavor ? <span className="text-orange-600 font-semibold"> · {product.flavor}</span> : null}
+                    </div>
                     {(product.category || product.subcategory) && (
                       <div className="text-xs text-gray-500 flex items-center gap-1.5 mt-1 font-normal">
                         {product.category && (
@@ -1409,7 +1466,18 @@ export default function POS({ onLogout }: POSProps) {
                       {product.stock_quantity}
                     </span>
                   </div>
-                  <div className="col-span-2 text-right font-bold">${Number(product.sale_price || 0).toFixed(2)}</div>
+                  <div className="col-span-2 text-right">
+                    <div className="font-bold">
+                      ${Number(
+                        isWholesaleMode && Number(product.wholesale_price) > 0
+                          ? product.wholesale_price
+                          : product.sale_price || 0
+                      ).toFixed(2)}
+                    </div>
+                    {isWholesaleMode && Number(product.wholesale_price) > 0 && (
+                      <div className="text-[10px] text-purple-600 font-semibold">Mayor · min {product.min_wholesale_qty || 1}</div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -1457,9 +1525,13 @@ export default function POS({ onLogout }: POSProps) {
         {/* Lista de Items del carrito */}
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
           {cart.map(item => (
-            <div key={item.product.id} className="flex gap-4 p-3 bg-white border border-gray-100 rounded-lg hover:border-orange-200 transition-colors shadow-sm">
+            <div key={`${item.product.id}-${item.isWholesale ? 'w' : 'r'}`} className="flex gap-4 p-3 bg-white border border-gray-100 rounded-lg hover:border-orange-200 transition-colors shadow-sm">
               <div className="flex-1">
-                <h4 className="font-semibold text-sm leading-tight text-gray-900 mb-1">{item.product.name}</h4>
+                <h4 className="font-semibold text-sm leading-tight text-gray-900 mb-1">
+                  {item.product.name}
+                  {item.product.flavor ? <span className="text-orange-600"> · {item.product.flavor}</span> : null}
+                  {item.isWholesale ? <span className="ml-1 text-[10px] uppercase bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded font-bold">Mayor</span> : null}
+                </h4>
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-gray-500 font-mono mb-2">
                   <span>SKU: {item.product.sku}</span>
                   {item.product.category && (
@@ -1470,23 +1542,23 @@ export default function POS({ onLogout }: POSProps) {
                 </div>
                 <div className="flex items-center gap-2">
                   <div className="flex items-center border border-gray-200 rounded overflow-hidden h-8">
-                    <button onClick={() => handleUpdateQuantity(item.product.id, item.quantity - 1)} className="px-2 pb-1 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold">-</button>
+                    <button onClick={() => handleUpdateQuantity(item.product.id, item.quantity - 1, !!item.isWholesale)} className="px-2 pb-1 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold">-</button>
                     <input 
                       type="number" 
                       className="w-10 text-center text-sm font-bold border-x border-gray-200 p-0 h-full !outline-none m-0"
                       value={item.quantity}
-                      onChange={(e) => handleUpdateQuantity(item.product.id, parseInt(e.target.value) || 0)}
+                      onChange={(e) => handleUpdateQuantity(item.product.id, parseInt(e.target.value) || 0, !!item.isWholesale)}
                     />
-                    <button onClick={() => handleUpdateQuantity(item.product.id, item.quantity + 1)} className="px-2 pb-1 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold">+</button>
+                    <button onClick={() => handleUpdateQuantity(item.product.id, item.quantity + 1, !!item.isWholesale)} className="px-2 pb-1 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold">+</button>
                   </div>
-                  <button onClick={() => handleUpdateQuantity(item.product.id, 0)} className="text-red-400 hover:text-red-600 p-1">
+                  <button onClick={() => handleUpdateQuantity(item.product.id, 0, !!item.isWholesale)} className="text-red-400 hover:text-red-600 p-1">
                     <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
               </div>
               <div className="text-right flex flex-col justify-between">
-                <div className="font-bold whitespace-nowrap text-gray-900">${Number(item.product.sale_price * item.quantity || 0).toFixed(2)}</div>
-                <div className="text-xs text-gray-400 font-medium">u/${Number(item.product.sale_price || 0).toFixed(2)}</div>
+                <div className="font-bold whitespace-nowrap text-gray-900">${Number(lineUnitPrice(item) * item.quantity || 0).toFixed(2)}</div>
+                <div className="text-xs text-gray-400 font-medium">u/${Number(lineUnitPrice(item) || 0).toFixed(2)}</div>
               </div>
             </div>
           ))}
