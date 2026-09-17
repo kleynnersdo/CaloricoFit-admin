@@ -148,6 +148,31 @@ function buildWhere(filters = [], startIdx = 1) {
     } else if (f.op === 'lte') {
       clauses.push(`"${f.col}" <= $${i++}`);
       values.push(f.val);
+    } else if (f.op === 'ilike') {
+      clauses.push(`"${f.col}" ILIKE $${i++}`);
+      values.push(f.val);
+    } else if (f.op === 'or') {
+      const parts = String(f.val || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const orClauses = [];
+      for (const part of parts) {
+        const m = part.match(/^([a-z0-9_]+)\.([a-z]+)\.(.+)$/i);
+        if (!m) continue;
+        const col = m[1];
+        const op = m[2].toLowerCase();
+        const val = m[3];
+        if (!/^[a-z0-9_]+$/i.test(col)) continue;
+        if (op === 'ilike') {
+          orClauses.push(`"${col}" ILIKE $${i++}`);
+          values.push(val);
+        } else if (op === 'eq') {
+          orClauses.push(`"${col}" = $${i++}`);
+          values.push(val);
+        }
+      }
+      if (orClauses.length) clauses.push(`(${orClauses.join(' OR ')})`);
     }
   }
   return {

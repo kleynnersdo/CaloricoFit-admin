@@ -49,7 +49,10 @@ class LocalQuery {
   }
 
   select(cols: string = '*') {
-    this.action = 'select';
+    // Supabase: .insert().select() means INSERT ... RETURNING, not a new SELECT.
+    if (this.action !== 'insert' && this.action !== 'update' && this.action !== 'upsert') {
+      this.action = 'select';
+    }
     this.selectCols = cols;
     return this;
   }
@@ -109,6 +112,16 @@ class LocalQuery {
 
   lte(col: string, val: unknown) {
     this.filters.push({ op: 'lte', col, val });
+    return this;
+  }
+
+  ilike(col: string, val: unknown) {
+    this.filters.push({ op: 'ilike', col, val });
+    return this;
+  }
+
+  or(expr: string) {
+    this.filters.push({ op: 'or', col: '', val: expr });
     return this;
   }
 

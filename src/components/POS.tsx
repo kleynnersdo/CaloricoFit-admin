@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { ShoppingCart, Search, Trash2, Camera, UserPlus, CreditCard, ChevronDown, Check, LogOut, X, AlertCircle, Coins } from "lucide-react";
 import { Product, CartItem, Customer, PaymentMethod, lineUnitPrice } from "../types";
-import { GLOBAL_CONFIG, cn } from "../lib/utils";
+import { GLOBAL_CONFIG, cn, emptyToNull } from "../lib/utils";
 import BarcodeScanner from "./BarcodeScanner";
 import { supabase } from "../lib/supabase";
 import * as htmlToImage from "html-to-image";
@@ -71,13 +71,17 @@ export default function POS({ onLogout }: POSProps) {
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
   const [cedulaBusqueda, setCedulaBusqueda] = useState("");
+  const [customerMatches, setCustomerMatches] = useState<Customer[]>([]);
   const [isSearchingCustomer, setIsSearchingCustomer] = useState(false);
+  const [isSavingCustomer, setIsSavingCustomer] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const customerSearchRef = useRef<HTMLInputElement>(null);
+  const emptyQuickCustomer = {
+    document_id: "", first_name: "", last_name: "", phone: "+58", email: "", city: ""
+  };
   
   // Nuevo estado para formulario rápido de cliente
-  const [newCustomerForm, setNewCustomerForm] = useState({
-    first_name: "", last_name: "", phone: "+58", email: "", city: ""
-  });
+  const [newCustomerForm, setNewCustomerForm] = useState({ ...emptyQuickCustomer });
   const [vesMarkupPercentage, setVesMarkupPercentage] = useState(0);
   const [officialBcv, setOfficialBcv] = useState<{rate: number, date: string} | null>(null);
   const [loyaltyEarningRate, setLoyaltyEarningRate] = useState(10);
@@ -302,58 +306,180 @@ export default function POS({ onLogout }: POSProps) {
     onLogout();
   };
 
-  const searchCustomer = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!cedulaBusqueda) return;
-    setIsSearchingCustomer(true);
-    
-    try {
-      const { data, error } = await supabase
-        .from('customers')
-        .select('*')
-        .eq('document_id', cedulaBusqueda.toUpperCase())
-        .single();
-        
-      if (data) {
-        setCustomer(data);
-        setIsCustomerModalOpen(false);
-      } else {
-        // No se encontró, preparar para registrar
-        showToast("Cliente no encontrado en la base de datos.");
-        setNewCustomerForm({ ...newCustomerForm }); // Resetear pero mantener listo
-      }
-    } catch (err: any) {
-      if (err.code === "PGRST116") {
-        // No hay filas (No encontrado es 116 en PostgREST)
-        showToast("Cliente no encontrado. Proceda a agregarlo.");
-      } else {
-        console.error("Error buscando cliente", err);
-      }
-    } finally {
-      setIsSearchingCustomer(false);
+  const resetCustomerModal = () => {
+    setCedulaBusqueda("");
+    setCustomerMatches([]);
+    setIsSearchingCustomer(false);
+    setIsSavingCustomer(false);
+    setNewCustomerForm({ ...emptyQuickCustomer });
+  };
+
+  const closeCustomerModal = () => {
+    setIsCustomerModalOpen(false);
+    resetCustomerModal();
+  };
+
+  const assignCustomer = (selected: Customer, silent = false) => {
+    setCustomer(selected);
+    setPointsToRedeem('');
+    closeCustomerModal();
+    if (!silent) {
+      showToast(`Cliente asignado: ${selected.first_name} ${selected.last_name}`);
     }
   };
 
+  const sanitizeCustomerToken = (raw: string) =>
+    raw.replace(/[%_,()]/g, ' ').trim();
+
+  const looksLikeDocumentId = (raw: string) => {
+    const compact = raw.trim().toUpperCase().replace(/[\s.-]/g, '');
+    return /^V?\d{5,12}$/.test(compact);
+  };
+
+  useEffect(() => {
+    if (!isCustomerModalOpen) return;
+    const timer = setTimeout(() => customerSearchRef.current?.focus(), 50);
+    return () => clearTimeout(timer);
+  }, [isCustomerModalOpen]);
+
+  useEffect(() => {
+    if (!isCustomerModalOpen) return;
+    const q = cedulaBusqueda.trim();
+    if (looksLikeDocumentId(q)) {
+      setNewCustomerForm(prev => (
+        prev.document_id && prev.document_id !== q.toUpperCase()
+          ? prev
+          : { ...prev, document_id: q.toUpperCase() }
+      ));
+    }
+    if (q.length < 2) {
+      setCustomerMatches([]);
+      setIsSearchingCustomer(false);
+      return;
+    }
+    const tokens = sanitizeCustomerToken(q)
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 4);
+    if (!tokens.length) {
+      setCustomerMatches([]);
+      return;
+    }
+
+    let cancelled = false;
+    setIsSearchingCustomer(true);
+    const t = setTimeout(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('customers')
+          .select('*')
+          .or(`document_id.ilike.%${tokens[0]}%,first_name.ilike.%${tokens[0]}%,last_name.ilike.%${tokens[0]}%`)
+          .order('first_name', { ascending: true })
+          .limit(25);
+        if (cancelled) return;
+        if (error) {
+          console.error("Error buscando cliente", error);
+          setCustomerMatches([]);
+        } else {
+          const needle = tokens.map(t => t.toLowerCase());
+          const filtered = (data || []).filter((c: Customer) => {
+            const hay = `${c.document_id || ''} ${c.first_name || ''} ${c.last_name || ''}`.toLowerCase();
+            return needle.every(token => hay.includes(token));
+          }).slice(0, 8);
+          setCustomerMatches(filtered);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          console.error("Error buscando cliente", err);
+          setCustomerMatches([]);
+        }
+      } finally {
+        if (!cancelled) setIsSearchingCustomer(false);
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [cedulaBusqueda, isCustomerModalOpen]);
+
   const createCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
+    const documentId = String(newCustomerForm.document_id || '').trim().toUpperCase();
+    const firstName = String(newCustomerForm.first_name || '').trim();
+    const lastName = String(newCustomerForm.last_name || '').trim();
+    const phone = String(newCustomerForm.phone || '').trim();
+    const city = String(newCustomerForm.city || '').trim();
+
+    if (!documentId || !firstName || !lastName) {
+      showToast("Cédula, nombre y apellido son obligatorios.");
+      return;
+    }
+    if (!phone || phone === '+58') {
+      showToast("El teléfono es obligatorio.");
+      return;
+    }
+    if (!city) {
+      showToast("La ciudad es obligatoria.");
+      return;
+    }
+
+    setIsSavingCustomer(true);
     try {
+      const { data: existing, error: existingError } = await supabase
+        .from('customers')
+        .select('*')
+        .eq('document_id', documentId)
+        .maybeSingle();
+
+      if (existingError && existingError.code !== 'PGRST116') {
+        throw existingError;
+      }
+      if (existing) {
+        assignCustomer(existing, true);
+        showToast("Ese cliente ya existía. Quedó asignado.");
+        return;
+      }
+
       const { data, error } = await supabase
         .from('customers')
         .insert([{
-          document_id: cedulaBusqueda.toUpperCase(),
-          ...newCustomerForm
+          document_id: documentId,
+          first_name: firstName,
+          last_name: lastName,
+          phone,
+          email: emptyToNull(newCustomerForm.email),
+          city: emptyToNull(city),
         }])
         .select()
         .single();
-        
-      if (error) throw error;
-      if (data) {
-        setCustomer(data);
-        setIsCustomerModalOpen(false);
-        setNewCustomerForm({first_name: "", last_name: "", phone: "", email: "", city: ""});
+
+      if (error) {
+        const isDuplicate = String(error.message || '').toLowerCase().includes('unique')
+          || String(error.message || '').toLowerCase().includes('duplicate')
+          || error.code === '23505';
+        if (isDuplicate) {
+          const { data: dup } = await supabase
+            .from('customers')
+            .select('*')
+            .eq('document_id', documentId)
+            .maybeSingle();
+          if (dup) {
+            assignCustomer(dup, true);
+            showToast("Ese cliente ya existía. Quedó asignado.");
+            return;
+          }
+          showToast("Esa cédula o correo ya está registrado.");
+          return;
+        }
+        throw error;
       }
+      if (data) assignCustomer(data);
     } catch (err: any) {
-      showToast("Error al registrar cliente: " + err.message);
+      showToast("Error al registrar cliente: " + (err?.message || 'intenta de nuevo'));
+    } finally {
+      setIsSavingCustomer(false);
     }
   };
 
@@ -1268,38 +1394,67 @@ export default function POS({ onLogout }: POSProps) {
       {/* Modal de Cliente */}
       {isCustomerModalOpen && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden max-h-[90vh] overflow-y-auto">
             <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
               <h3 className="font-bold text-lg">Asignar / Registrar Cliente</h3>
-              <button onClick={() => setIsCustomerModalOpen(false)} className="text-gray-400 hover:text-black">
+              <button onClick={closeCustomerModal} className="text-gray-400 hover:text-black">
                 <X className="w-5 h-5"/>
               </button>
             </div>
             <div className="p-6">
-              <form onSubmit={searchCustomer} className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Buscar por Cédula</label>
-                <div className="flex gap-2">
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Buscar cliente</label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4" />
                   <input 
+                    ref={customerSearchRef}
                     type="text" 
                     value={cedulaBusqueda}
                     onChange={(e) => setCedulaBusqueda(e.target.value)}
-                    placeholder="V-12345678"
-                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-200 focus:border-orange-500 outline-none uppercase"
-                    required
+                    placeholder="Cédula, nombre o apellido"
+                    className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-orange-200 focus:border-orange-500 outline-none"
+                    autoComplete="off"
                   />
-                  <button 
-                    type="submit" 
-                    disabled={isSearchingCustomer}
-                    className="bg-black text-white px-4 py-2 rounded-lg font-medium hover:bg-gray-800 disabled:opacity-50"
-                  >
-                    {isSearchingCustomer ? '...' : 'Buscar'}
-                  </button>
+                  {isSearchingCustomer && (
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">...</span>
+                  )}
                 </div>
-              </form>
+                {cedulaBusqueda.trim().length >= 2 && (
+                  <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-white shadow-sm max-h-52 overflow-y-auto">
+                    {customerMatches.length > 0 ? customerMatches.map(match => (
+                      <button
+                        key={match.id}
+                        type="button"
+                        onClick={() => assignCustomer(match)}
+                        className="w-full text-left px-3 py-2.5 hover:bg-orange-50 border-b border-gray-100 last:border-b-0 transition-colors"
+                      >
+                        <div className="font-semibold text-gray-900 text-sm">
+                          {match.first_name} {match.last_name}
+                        </div>
+                        <div className="text-xs text-gray-500 font-mono mt-0.5 flex items-center justify-between gap-2">
+                          <span>{match.document_id}{match.city ? ` · ${match.city}` : ''}</span>
+                          <span className="text-orange-600 font-bold">⭐ {match.loyalty_points || 0} pts</span>
+                        </div>
+                      </button>
+                    )) : !isSearchingCustomer ? (
+                      <div className="px-3 py-2.5 text-sm text-gray-500">
+                        Sin coincidencias. Completa el registro rápido abajo.
+                      </div>
+                    ) : (
+                      <div className="px-3 py-2.5 text-sm text-gray-400">Buscando...</div>
+                    )}
+                  </div>
+                )}
+              </div>
 
               <div className="border-t border-gray-100 pt-6">
                 <h4 className="text-sm font-medium text-gray-500 mb-4">Registro Rápido (Si no existe)</h4>
                 <form onSubmit={createCustomer} className="space-y-4">
+                  <input 
+                    type="text" placeholder="Cédula" required
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg outline-none focus:border-orange-500 uppercase font-mono"
+                    value={newCustomerForm.document_id} onChange={e => setNewCustomerForm({...newCustomerForm, document_id: e.target.value})}
+                  />
                   <div className="grid grid-cols-2 gap-4">
                     <div>
                       <input 
@@ -1337,8 +1492,8 @@ export default function POS({ onLogout }: POSProps) {
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg outline-none focus:border-orange-500"
                     value={newCustomerForm.email} onChange={e => setNewCustomerForm({...newCustomerForm, email: e.target.value})}
                   />
-                  <button type="submit" className="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-2 rounded-lg">
-                    Guardar y Asignar
+                  <button type="submit" disabled={isSavingCustomer} className="w-full bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white font-bold py-2 rounded-lg">
+                    {isSavingCustomer ? 'Guardando...' : 'Guardar y Asignar'}
                   </button>
                 </form>
               </div>
@@ -1503,7 +1658,7 @@ export default function POS({ onLogout }: POSProps) {
               <div className="text-xs text-orange-600/80 font-medium uppercase tracking-wider mb-1">Cliente Asignado</div>
               <div className="font-bold text-gray-900 flex items-center justify-between">
                 {customer.first_name} {customer.last_name}
-                <button onClick={() => setCustomer(null)} className="text-gray-500 hover:text-black">
+                <button onClick={() => { setCustomer(null); setPointsToRedeem(''); }} className="text-gray-500 hover:text-black">
                   <X className="w-4 h-4"/>
                 </button>
               </div>
@@ -1511,6 +1666,13 @@ export default function POS({ onLogout }: POSProps) {
               <div className="text-xs font-bold text-orange-600 mt-2 flex items-center gap-1">
                 ⭐ {customer.loyalty_points} Pts
               </div>
+              <button
+                type="button"
+                onClick={() => { resetCustomerModal(); setIsCustomerModalOpen(true); }}
+                className="mt-2 text-xs font-semibold text-orange-600 hover:text-orange-700"
+              >
+                Cambiar cliente
+              </button>
             </div>
           ) : (
             <button 
