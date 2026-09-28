@@ -456,10 +456,15 @@ export default function POS({ onLogout }: POSProps) {
   };
 
   // Cálculos Multi-moneda (precio unitario snapshot: retail o mayor)
-  const subtotalUSD = cart.reduce((sum, item) => sum + (lineUnitPrice(item) * item.quantity), 0);
+  const subtotalUSD = cart.reduce(
+    (sum, item) => sum + Number(lineUnitPrice(item)) * Number(item.quantity || 0),
+    0
+  );
   const cartHasWholesale = cart.some(item => item.isWholesale);
-  
-  const discountPercentage = selectedPaymentMethod ? (selectedPaymentMethod.discount_percentage || 0) / 100 : 0;
+
+  const discountPercentage = selectedPaymentMethod
+    ? Number(selectedPaymentMethod.discount_percentage || 0) / 100
+    : 0;
   
   let loyaltyDiscountAmount = 0;
   let effectivePointsToRedeem = 0;
@@ -494,14 +499,18 @@ export default function POS({ onLogout }: POSProps) {
   const methodDiscountAmount = (subtotalUSD - loyaltyDiscountAmount) * discountPercentage;
   const discountAmount = methodDiscountAmount + loyaltyDiscountAmount;
 
-  const surchargePercentage = selectedPaymentMethod ? (selectedPaymentMethod.surcharge_percentage || 0) / 100 : 0;
+  const surchargePercentage = selectedPaymentMethod
+    ? Number(selectedPaymentMethod.surcharge_percentage || 0) / 100
+    : 0;
   const surchargeAmount = (subtotalUSD - loyaltyDiscountAmount) * surchargePercentage;
 
   const totalUSD = subtotalUSD - discountAmount + surchargeAmount;
-  
+
   const actualOficialBCV = resolveBcvRate(officialBcv?.rate);
   const markupMultiplier = vesMarkupMultiplier(vesMarkupPercentage);
-  const totalVES = usdToVes(totalUSD, actualOficialBCV, vesMarkupPercentage);
+  const toVes = (usd: number) => usdToVes(usd, actualOficialBCV, vesMarkupPercentage);
+  const subtotalVES = toVes(subtotalUSD);
+  const totalVES = toVes(totalUSD);
 
   const getPaymentUsdEquivalent = (pmId: string, amount: number) => {
     const pm = paymentMethods.find(p => p.id === pmId);
@@ -881,30 +890,30 @@ export default function POS({ onLogout }: POSProps) {
                       <div className="col-span-6 line-clamp-1 truncate pr-2">
                         {item.product.name}{item.product.flavor ? ` (${item.product.flavor})` : ''}{item.isWholesale ? ' · MAYOR' : ''}
                       </div>
-                      <div className="col-span-4 text-right">Bs. {Number(item.quantity * lineUnitPrice(item) * markupMultiplier * actualOficialBCV || 0).toFixed(2)}</div>
+                      <div className="col-span-4 text-right">Bs. {formatBs(toVes(Number(lineUnitPrice(item)) * Number(item.quantity)))}</div>
                     </div>
                   ))}
                 </div>
                 {loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Puntos:</span>
-                     <span>- Bs. {Number(loyaltyDiscountAmount * markupMultiplier * actualOficialBCV || 0).toFixed(2)}</span>
+                     <span>- Bs. {formatBs(toVes(loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {discountAmount - loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Adicional:</span>
-                     <span>- Bs. {Number((discountAmount - loyaltyDiscountAmount) * markupMultiplier * actualOficialBCV || 0).toFixed(2)}</span>
+                     <span>- Bs. {formatBs(toVes(discountAmount - loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {surchargeAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Recargo Adicional:</span>
-                     <span>+ Bs. {Number(surchargeAmount * markupMultiplier * actualOficialBCV || 0).toFixed(2)}</span>
+                     <span>+ Bs. {formatBs(toVes(surchargeAmount))}</span>
                    </div>
                 )}
                 <div className="text-right mt-2 text-base font-bold text-gray-900">
-                  TOTAL A PAGAR: Bs. {Number(totalVES || 0).toFixed(2)}
+                  TOTAL A PAGAR: Bs. {formatBs(totalVES)}
                 </div>
               </div>
 
@@ -1734,17 +1743,26 @@ export default function POS({ onLogout }: POSProps) {
 
         {/* Totales y Checkout */}
         <div className="bg-white border-t border-gray-200 p-5 shadow-[0_-10px_20px_rgba(0,0,0,0.02)]">
-          <div className="flex justify-between items-center mb-2">
+          <div className="flex justify-between items-center mb-1">
             <span className="text-gray-500 font-medium text-sm">Subtotal USD</span>
             <span className="font-bold text-gray-900">${Number(subtotalUSD || 0).toFixed(2)}</span>
           </div>
-          
-          {/* Equivalencias Inmediatas */}
+          <div className="flex justify-between items-center mb-3">
+            <span className="text-purple-700 font-medium text-sm">Subtotal Bs.</span>
+            <span className="font-bold text-purple-800">Bs. {formatBs(subtotalVES)}</span>
+          </div>
+
           <div className="space-y-1 mb-4 p-3 bg-gray-50 rounded-lg border border-gray-100">
-            <div className="flex justify-between items-center text-xs">
-              <span className="text-gray-500">Tasa BCV Oficial ({Number(actualOficialBCV || 0).toFixed(2)})</span>
-              <span className="font-semibold text-gray-700">Bs. {formatBs(totalVES)}</span>
+            <div className="flex justify-between items-center text-xs text-gray-500">
+              <span>Tasa BCV oficial</span>
+              <span className="font-semibold text-gray-700">Bs. {Number(actualOficialBCV || 0).toFixed(2)} / USD</span>
             </div>
+            {Number(vesMarkupPercentage) > 0 && (
+              <div className="flex justify-between items-center text-xs text-gray-500">
+                <span>Recargo pagos VES</span>
+                <span className="font-medium text-gray-700">+{Number(vesMarkupPercentage)}%</span>
+              </div>
+            )}
             {selectedPaymentMethod && selectedPaymentMethod.discount_percentage > 0 && (
                 <div className="flex justify-between items-center text-xs">
                   <span className="text-green-600 font-medium">Dcto {selectedPaymentMethod.name} (-{selectedPaymentMethod.discount_percentage}%)</span>
@@ -1760,10 +1778,11 @@ export default function POS({ onLogout }: POSProps) {
           </div>
 
           
-          <div className="flex justify-between items-end mb-6">
+          <div className="flex justify-between items-end mb-6 gap-4">
             <span className="text-lg font-bold text-gray-900">Total a Pagar</span>
             <div className="text-right">
-              <span className="text-3xl font-black text-orange-500 leading-none">${Number(totalUSD || 0).toFixed(2)}</span>
+              <div className="text-3xl font-black text-orange-500 leading-none">${Number(totalUSD || 0).toFixed(2)}</div>
+              <div className="text-xl font-black text-purple-700 leading-tight mt-1">Bs. {formatBs(totalVES)}</div>
             </div>
           </div>
           

@@ -27,14 +27,15 @@ export function vesMarkupMultiplier(markupPercentage: unknown): number {
 }
 
 export function usdToVes(
-  totalUsd: number,
+  totalUsd: unknown,
   bcvRate: unknown,
   markupPercentage: unknown
 ): number {
   const usd = Number(totalUsd);
   if (!Number.isFinite(usd) || usd <= 0) return 0;
   const rate = resolveBcvRate(bcvRate);
-  return usd * vesMarkupMultiplier(markupPercentage) * rate;
+  const ves = usd * vesMarkupMultiplier(markupPercentage) * rate;
+  return Number.isFinite(ves) ? ves : 0;
 }
 
 export function formatBs(amount: unknown): string {

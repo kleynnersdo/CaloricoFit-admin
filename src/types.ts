@@ -44,8 +44,10 @@ export interface PaymentMethod {
 }
 
 export function lineUnitPrice(item: CartItem): number {
-  if (item.isWholesale && Number(item.product.wholesale_price) > 0) {
-    return Number(item.product.wholesale_price);
+  const retail = Number(item.product.sale_price);
+  const wholesale = Number(item.product.wholesale_price);
+  if (item.isWholesale && Number.isFinite(wholesale) && wholesale > 0) {
+    return wholesale;
   }
-  return Number(item.product.sale_price || 0);
+  return Number.isFinite(retail) ? retail : 0;
 }
