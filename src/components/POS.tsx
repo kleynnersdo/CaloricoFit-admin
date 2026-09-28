@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { ShoppingCart, Search, Trash2, Camera, UserPlus, CreditCard, ChevronDown, Check, LogOut, X, AlertCircle, Coins } from "lucide-react";
 import {
   Product,
@@ -7,8 +7,10 @@ import {
   PaymentMethod,
   cartLineSubtotalUsd,
   cartLineQty,
+  cartUnitPriceUsd,
   lineUnitPrice,
   normalizeProduct,
+  sumCartSubtotalUsd,
 } from "../types";
 import { GLOBAL_CONFIG, cn, emptyToNull } from "../lib/utils";
 import {
@@ -33,6 +35,47 @@ export default function POS({ onLogout }: POSProps) {
   const [todaySales, setTodaySales] = useState<any[]>([]);
   const [isCierreCajaModalOpen, setIsCierreCajaModalOpen] = useState(false);
   const [confirmClosureChecked, setConfirmClosureChecked] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isWholesaleMode, setIsWholesaleMode] = useState(false);
+  const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [customer, setCustomer] = useState<Customer | null>(null);
+  const [inventory, setInventory] = useState<Product[]>([]);
+  const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
+  const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
+  const [cedulaBusqueda, setCedulaBusqueda] = useState("");
+  const [customerMatches, setCustomerMatches] = useState<Customer[]>([]);
+  const [isSearchingCustomer, setIsSearchingCustomer] = useState(false);
+  const [isSavingCustomer, setIsSavingCustomer] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const customerSearchRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const emptyQuickCustomer = {
+    document_id: "", first_name: "", last_name: "", phone: "+58", email: "", city: ""
+  };
+  const [newCustomerForm, setNewCustomerForm] = useState({ ...emptyQuickCustomer });
+  const [officialBcv, setOfficialBcv] = useState<{rate: number, date: string} | null>(null);
+  const [bcvLoading, setBcvLoading] = useState(true);
+  const [loyaltyEarningRate, setLoyaltyEarningRate] = useState(10);
+  const [loyaltySpendingRate, setLoyaltySpendingRate] = useState(15);
+  const [loyaltyMinSpend, setLoyaltyMinSpend] = useState(1000);
+  const [loyaltyMaxRedemptionPercentage, setLoyaltyMaxRedemptionPercentage] = useState(100);
+  const [pointsToRedeem, setPointsToRedeem] = useState<number | ''>('');
+  const [loyaltyRewardMode, setLoyaltyRewardMode] = useState(false);
+  const [loyaltyRewardThreshold, setLoyaltyRewardThreshold] = useState(500);
+  const [loyaltyRewardType, setLoyaltyRewardType] = useState('fixed');
+  const [loyaltyRewardValue, setLoyaltyRewardValue] = useState(5);
+  const [whatsappMessage, setWhatsappMessage] = useState("¡Hola! Aquí tienes el comprobante de tu compra en Calórico Fit. ¡Gracias por preferirnos!");
+  const ticketRef = useRef<HTMLDivElement>(null);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod | null>(null);
+  const [receivedAmount, setReceivedAmount] = useState<string>('');
+  const [giveChange, setGiveChange] = useState(false);
+  const [changeCurrency, setChangeCurrency] = useState<'USD' | 'VES'>('USD');
+  const [isMultiCurrency, setIsMultiCurrency] = useState(false);
+  const [multiPayments, setMultiPayments] = useState<{ [methodId: string]: number }>({});
+  const [selectedMultiMethodId, setSelectedMultiMethodId] = useState<string>('');
+  const [multiAmountInput, setMultiAmountInput] = useState<string>('');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const fetchTodaySales = async () => {
       try {
@@ -80,53 +123,7 @@ export default function POS({ onLogout }: POSProps) {
         fetchTodaySales();
     }
   }, [isCierreCajaModalOpen]);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [isWholesaleMode, setIsWholesaleMode] = useState(false);
-  const [isScannerOpen, setIsScannerOpen] = useState(false);
-  const [customer, setCustomer] = useState<Customer | null>(null);
-  const [inventory, setInventory] = useState<Product[]>([]);
-  const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
-  const [isCheckoutModalOpen, setIsCheckoutModalOpen] = useState(false);
-  const [cedulaBusqueda, setCedulaBusqueda] = useState("");
-  const [customerMatches, setCustomerMatches] = useState<Customer[]>([]);
-  const [isSearchingCustomer, setIsSearchingCustomer] = useState(false);
-  const [isSavingCustomer, setIsSavingCustomer] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const customerSearchRef = useRef<HTMLInputElement>(null);
-  const emptyQuickCustomer = {
-    document_id: "", first_name: "", last_name: "", phone: "+58", email: "", city: ""
-  };
-  
-  // Nuevo estado para formulario rápido de cliente
-  const [newCustomerForm, setNewCustomerForm] = useState({ ...emptyQuickCustomer });
-  const [officialBcv, setOfficialBcv] = useState<{rate: number, date: string} | null>(null);
-  const [bcvLoading, setBcvLoading] = useState(true);
-  const [loyaltyEarningRate, setLoyaltyEarningRate] = useState(10);
-  const [loyaltySpendingRate, setLoyaltySpendingRate] = useState(15);
-  const [loyaltyMinSpend, setLoyaltyMinSpend] = useState(1000);
-  const [loyaltyMaxRedemptionPercentage, setLoyaltyMaxRedemptionPercentage] = useState(100);
-  const [pointsToRedeem, setPointsToRedeem] = useState<number | ''>('');
-  const [loyaltyRewardMode, setLoyaltyRewardMode] = useState(false);
-  const [loyaltyRewardThreshold, setLoyaltyRewardThreshold] = useState(500);
-  const [loyaltyRewardType, setLoyaltyRewardType] = useState('fixed');
-  const [loyaltyRewardValue, setLoyaltyRewardValue] = useState(5);
-  const [whatsappMessage, setWhatsappMessage] = useState("¡Hola! Aquí tienes el comprobante de tu compra en Calórico Fit. ¡Gracias por preferirnos!");
-  const ticketRef = useRef<HTMLDivElement>(null);
-  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState<PaymentMethod | null>(null);
-  const [receivedAmount, setReceivedAmount] = useState<string>('');
 
-  // States for 'vueltos' (change calculation)
-  const [giveChange, setGiveChange] = useState(false);
-  const [changeCurrency, setChangeCurrency] = useState<'USD' | 'VES'>('USD');
-
-  // States for multi-currency payment
-  const [isMultiCurrency, setIsMultiCurrency] = useState(false);
-  const [multiPayments, setMultiPayments] = useState<{ [methodId: string]: number }>({});
-  const [selectedMultiMethodId, setSelectedMultiMethodId] = useState<string>('');
-  const [multiAmountInput, setMultiAmountInput] = useState<string>('');
-
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
@@ -218,14 +215,16 @@ export default function POS({ onLogout }: POSProps) {
   }, []);
 
   useEffect(() => {
-    if (!inventory.length || !cart.length) return;
-    setCart((prev) =>
-      prev.map((item) => {
-        const fresh = inventory.find((p) => p.id === item.product.id);
-        return fresh ? { ...item, product: fresh } : item;
-      })
-    );
-  }, [inventory]);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'F2') {
+        e.preventDefault();
+        setIsScannerOpen(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    searchInputRef.current?.focus();
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Buscar productos dinámicamente
   const searchResults = searchTerm.length >= 2 
@@ -256,9 +255,13 @@ export default function POS({ onLogout }: POSProps) {
           showToast(`Stock insuficiente. Solo quedan ${normalized.stock_quantity} unidades.`);
           return prev;
         }
+        const unitPriceUsd =
+          wantsWholesale && normalized.wholesale_price > 0
+            ? normalized.wholesale_price
+            : normalized.sale_price;
         return prev.map(item =>
-          item.product.id === normalized.id && !!item.isWholesale === wantsWholesale
-            ? { ...item, quantity: nextQty, product: normalized }
+          String(item.product.id) === String(normalized.id) && !!item.isWholesale === wantsWholesale
+            ? { ...item, quantity: nextQty, product: normalized, unitPriceUsd }
             : item
         );
       }
@@ -270,7 +273,11 @@ export default function POS({ onLogout }: POSProps) {
         showToast(`Stock insuficiente para la cantidad mínima al mayor (${minQty}).`);
         return prev;
       }
-      return [...prev, { product: normalized, quantity: minQty, isWholesale: wantsWholesale }];
+      const unitPriceUsd =
+        wantsWholesale && normalized.wholesale_price > 0
+          ? normalized.wholesale_price
+          : normalized.sale_price;
+      return [...prev, { product: normalized, quantity: minQty, isWholesale: wantsWholesale, unitPriceUsd }];
     });
     setSearchTerm("");
   };
@@ -280,7 +287,7 @@ export default function POS({ onLogout }: POSProps) {
       setCart(prev => prev.filter(item => !(item.product.id === id && !!item.isWholesale === isWholesale)));
       return;
     }
-    const product = inventory.find(p => p.id === id);
+    const product = inventory.find(p => String(p.id) === String(id));
     if (product && qty > product.stock_quantity) {
         showToast(`Stock insuficiente. Max: ${product.stock_quantity}`);
         return;
@@ -292,11 +299,15 @@ export default function POS({ onLogout }: POSProps) {
         return;
       }
     }
-    setCart(prev => prev.map(item =>
-      item.product.id === id && !!item.isWholesale === isWholesale
-        ? { ...item, quantity: qty }
-        : item
-    ));
+    setCart(prev => prev.map(item => {
+      if (item.product.id !== id || !!item.isWholesale !== isWholesale) return item;
+      const refreshed = product ? normalizeProduct(product) : item.product;
+      const unitPriceUsd =
+        isWholesale && refreshed.wholesale_price > 0
+          ? refreshed.wholesale_price
+          : refreshed.sale_price;
+      return { ...item, product: refreshed, quantity: qty, unitPriceUsd };
+    }));
   };
 
   const handleBarcodeScan = (text: string) => {
@@ -491,10 +502,7 @@ export default function POS({ onLogout }: POSProps) {
     }
   };
 
-  const subtotalUSD = useMemo(
-    () => cart.reduce((sum, item) => sum + cartLineSubtotalUsd(item, inventory), 0),
-    [cart, inventory]
-  );
+  const subtotalUSD = sumCartSubtotalUsd(cart, inventory);
   const cartHasWholesale = cart.some(item => item.isWholesale);
 
   const discountPercentage = selectedPaymentMethod
@@ -862,20 +870,6 @@ export default function POS({ onLogout }: POSProps) {
       setIsProcessing(false);
     }
   };
-
-  // Manejo de teclado
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'F2') {
-        e.preventDefault();
-        setIsScannerOpen(prev => !prev);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    if (searchInputRef.current) searchInputRef.current.focus();
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
 
   return (
     <div className="flex h-screen w-full bg-[#f8f9fa] overflow-hidden text-black font-sans relative">
@@ -1772,7 +1766,7 @@ export default function POS({ onLogout }: POSProps) {
               <div className="text-right flex flex-col justify-between">
                 <div className="font-bold whitespace-nowrap text-gray-900">${formatUsd(cartLineSubtotalUsd(item, inventory))}</div>
                 <div className="text-xs font-bold text-purple-700">Bs. {formatBs(toVes(cartLineSubtotalUsd(item, inventory)))}</div>
-                <div className="text-xs text-gray-400 font-medium">u/${formatUsd(lineUnitPrice(item, inventory))}</div>
+                <div className="text-xs text-gray-400 font-medium">u/${formatUsd(cartUnitPriceUsd(item, inventory))}</div>
               </div>
             </div>
           ))}

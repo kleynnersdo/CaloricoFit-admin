@@ -21,6 +21,8 @@ export interface CartItem {
   product: Product;
   quantity: number;
   isWholesale?: boolean;
+  /** Precio unitario USD fijado al agregar (no depende del snapshot roto en pantalla). */
+  unitPriceUsd?: number;
 }
 
 export interface Customer {
@@ -53,9 +55,10 @@ export function coerceMoney(value: unknown): number {
 }
 
 export function normalizeProduct(raw: Product): Product {
+  const extra = raw as Product & Record<string, unknown>;
   return {
     ...raw,
-    sale_price: coerceMoney(raw.sale_price),
+    sale_price: coerceMoney(extra.sale_price ?? extra.retail_price ?? extra.price ?? extra.unit_price),
     cost_price: coerceMoney(raw.cost_price),
     wholesale_price: coerceMoney(raw.wholesale_price),
     min_wholesale_qty: coerceMoney(raw.min_wholesale_qty),
@@ -65,8 +68,15 @@ export function normalizeProduct(raw: Product): Product {
 
 /** Precio actualizado desde inventario si el snapshot del carrito no trae sale_price. */
 export function resolveCartProduct(item: CartItem, inventory?: Product[]): Product {
-  const fresh = inventory?.find((p) => p.id === item.product.id);
+  const id = String(item.product.id);
+  const fresh = inventory?.find((p) => String(p.id) === id);
   return normalizeProduct(fresh ?? item.product);
+}
+
+export function cartUnitPriceUsd(item: CartItem, inventory?: Product[]): number {
+  const snap = item.unitPriceUsd;
+  if (snap != null && Number.isFinite(snap) && snap > 0) return snap;
+  return lineUnitPrice(item, inventory);
 }
 
 export function cartLineQty(item: CartItem): number {
@@ -85,5 +95,9 @@ export function lineUnitPrice(item: CartItem, inventory?: Product[]): number {
 export function cartLineSubtotalUsd(item: CartItem, inventory?: Product[]): number {
   const qty = cartLineQty(item);
   if (qty <= 0) return 0;
-  return lineUnitPrice(item, inventory) * qty;
+  return cartUnitPriceUsd(item, inventory) * qty;
+}
+
+export function sumCartSubtotalUsd(cart: CartItem[], inventory?: Product[]): number {
+  return cart.reduce((sum, item) => sum + cartLineSubtotalUsd(item, inventory), 0);
 }
