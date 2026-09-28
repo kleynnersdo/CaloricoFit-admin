@@ -175,8 +175,21 @@ class LocalQuery {
       }),
     });
     const json = await res.json();
-    if (!res.ok && !json?.error) {
-      return { data: null, error: { message: `HTTP ${res.status}` } };
+    if (!res.ok) {
+      const msg =
+        typeof json?.error === 'string'
+          ? json.error
+          : json?.error?.message || `HTTP ${res.status}`;
+      if (res.status === 401) {
+        writeSession(null);
+      }
+      return {
+        data: null,
+        error: {
+          message: msg,
+          code: json?.error?.code || (res.status === 401 ? '401' : `HTTP_${res.status}`),
+        },
+      };
     }
     return json;
   }

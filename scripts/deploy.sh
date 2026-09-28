@@ -45,6 +45,11 @@ for i in {1..30}; do
   sleep 2
 done
 
+if [[ -f db/smoke/04_security.sql ]]; then
+  echo "==> Migración seguridad (sessions / audit_log)"
+  docker exec -i caloricofit-prod-db psql -U calorico -d caloricofit < db/smoke/04_security.sql
+fi
+
 if [[ -n "${ADMIN_EMAIL:-}" && -n "${ADMIN_PASSWORD:-}" ]]; then
   echo "==> Admin inicial (si no existe)"
   docker exec -i caloricofit-prod-db psql -U calorico -d caloricofit <<EOSQL
