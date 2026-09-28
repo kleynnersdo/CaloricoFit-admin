@@ -43,6 +43,17 @@ export interface PaymentMethod {
   is_active: boolean;
 }
 
+export function normalizeProduct(raw: Product): Product {
+  return {
+    ...raw,
+    sale_price: Number(raw.sale_price) || 0,
+    cost_price: Number(raw.cost_price) || 0,
+    wholesale_price: Number(raw.wholesale_price) || 0,
+    min_wholesale_qty: Number(raw.min_wholesale_qty) || 0,
+    stock_quantity: Number(raw.stock_quantity) || 0,
+  };
+}
+
 export function lineUnitPrice(item: CartItem): number {
   const retail = Number(item.product.sale_price);
   const wholesale = Number(item.product.wholesale_price);

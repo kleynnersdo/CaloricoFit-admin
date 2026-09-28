@@ -61,13 +61,20 @@ function localApiBase(): string | null {
   return String((import.meta as any).env.VITE_LOCAL_API_URL || 'http://localhost:3032').replace(/\/$/, '');
 }
 
+function bcvProxyUrls(): string[] {
+  const urls: string[] = [];
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    urls.push(`${window.location.origin}/api/public/bcv/oficial`);
+  }
+  const apiBase = localApiBase();
+  if (apiBase) urls.push(`${apiBase}/public/bcv/oficial`);
+  return [...new Set(urls)];
+}
+
 /** Tasa BCV oficial: proxy local (VPS) y fallback a dolarapi + 36.50. */
 export async function fetchOfficialBcv(): Promise<OfficialBcv> {
   const today = new Date().toISOString().split('T')[0];
-  const urls: string[] = [];
-  const apiBase = localApiBase();
-  if (apiBase) urls.push(`${apiBase}/public/bcv/oficial`);
-  urls.push('https://ve.dolarapi.com/v1/dolares/oficial');
+  const urls: string[] = [...bcvProxyUrls(), 'https://ve.dolarapi.com/v1/dolares/oficial'];
 
   for (const url of urls) {
     try {

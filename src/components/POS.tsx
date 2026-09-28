@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { ShoppingCart, Search, Trash2, Camera, UserPlus, CreditCard, ChevronDown, Check, LogOut, X, AlertCircle, Coins } from "lucide-react";
-import { Product, CartItem, Customer, PaymentMethod, lineUnitPrice } from "../types";
+import { Product, CartItem, Customer, PaymentMethod, lineUnitPrice, normalizeProduct } from "../types";
 import { GLOBAL_CONFIG, cn, emptyToNull } from "../lib/utils";
 import {
   fetchOfficialBcv,
@@ -93,6 +93,7 @@ export default function POS({ onLogout }: POSProps) {
   const [newCustomerForm, setNewCustomerForm] = useState({ ...emptyQuickCustomer });
   const [vesMarkupPercentage, setVesMarkupPercentage] = useState(0);
   const [officialBcv, setOfficialBcv] = useState<{rate: number, date: string} | null>(null);
+  const [bcvLoading, setBcvLoading] = useState(true);
   const [loyaltyEarningRate, setLoyaltyEarningRate] = useState(10);
   const [loyaltySpendingRate, setLoyaltySpendingRate] = useState(15);
   const [loyaltyMinSpend, setLoyaltyMinSpend] = useState(1000);
@@ -157,41 +158,59 @@ export default function POS({ onLogout }: POSProps) {
         }
       } catch (e) {}
 
+      setBcvLoading(true);
       try {
         setOfficialBcv(await fetchOfficialBcv());
       } catch {
         setOfficialBcv({ rate: GLOBAL_CONFIG.BCV_RATE, date: new Date().toISOString().split('T')[0] });
+      } finally {
+        setBcvLoading(false);
       }
-    }
-    fetchSettings();
+    };
 
     const fetchInventory = async () => {
       try {
         const { data, error } = await supabase.from('products').select('*').eq('is_active', true);
         if (error) throw error;
         if (data) {
-          setInventory(data);
+          setInventory(data.map((p: Product) => normalizeProduct(p)));
         }
       } catch (error) {
         console.error("Error cargando el inventario de Supabase.", error);
         showToast("Atención: No se pudo conectar a la base de datos.");
       }
     };
-    
+
     const fetchPaymentMethods = async () => {
       const { data } = await supabase.from('payment_methods').select('*').eq('is_active', true);
       if (data) {
-          setPaymentMethods(data);
-          if (data.length > 0) {
-            setSelectedPaymentMethod(data[0]);
-            const firstNonPoints = data.find(p => p.currency !== 'POINTS') || data[0];
-            setSelectedMultiMethodId(firstNonPoints.id);
-          }
+        const normalized = data.map((pm: PaymentMethod) => ({
+          ...pm,
+          discount_percentage: Number(pm.discount_percentage) || 0,
+          surcharge_percentage: Number(pm.surcharge_percentage) || 0,
+        }));
+        setPaymentMethods(normalized);
+        if (normalized.length > 0) {
+          setSelectedPaymentMethod(normalized[0]);
+          const firstNonPoints = normalized.find((p) => p.currency !== 'POINTS') || normalized[0];
+          setSelectedMultiMethodId(firstNonPoints.id);
+        }
       }
     };
 
+    fetchSettings();
     fetchInventory();
     fetchPaymentMethods();
+
+    const refreshBcv = async () => {
+      try {
+        setOfficialBcv(await fetchOfficialBcv());
+      } catch {
+        /* keep last rate */
+      }
+    };
+    const bcvTimer = window.setInterval(refreshBcv, 5 * 60 * 1000);
+    return () => window.clearInterval(bcvTimer);
   }, []);
   
   // Buscar productos dinámicamente
@@ -1751,40 +1770,57 @@ export default function POS({ onLogout }: POSProps) {
         </div>
 
         {/* Totales y Checkout — siempre visible (no scroll) */}
-        <div className="shrink-0 bg-white border-t border-gray-200 p-5 shadow-[0_-10px_20px_rgba(0,0,0,0.02)] max-h-[55vh] overflow-y-auto">
-          <div className="flex justify-between items-center mb-1">
-            <span className="text-gray-500 font-medium text-sm">Subtotal USD</span>
-            <span className="font-bold text-gray-900">${formatUsd(subtotalUSD)}</span>
-          </div>
-          <div className="flex justify-between items-center mb-3">
-            <span className="text-purple-700 font-medium text-sm">Subtotal Bs.</span>
-            <span className="font-bold text-purple-800">Bs. {formatBs(subtotalVES)}</span>
+        <div className="shrink-0 bg-white border-t-2 border-orange-200 p-4 shadow-[0_-10px_20px_rgba(0,0,0,0.06)] max-h-[55vh] overflow-y-auto">
+          <div className="mb-3 p-3 rounded-lg bg-slate-800 text-white text-sm">
+            <div className="flex justify-between items-center gap-2">
+              <span className="font-medium opacity-90">Tipo de cambio BCV</span>
+              <span className="font-black text-base tabular-nums">
+                {bcvLoading && !officialBcv
+                  ? 'Actualizando…'
+                  : `Bs. ${formatBs(actualOficialBCV)} por $1`}
+              </span>
+            </div>
+            {officialBcv?.date && (
+              <div className="text-[10px] opacity-70 mt-1 text-right">Ref. {officialBcv.date}</div>
+            )}
+            {Number(vesMarkupPercentage) > 0 && (
+              <div className="text-[11px] mt-1 opacity-90">Recargo VES: +{Number(vesMarkupPercentage)}% incluido en Bs.</div>
+            )}
           </div>
 
-          <div className="space-y-1 mb-4 p-3 bg-gray-50 rounded-lg border border-gray-100">
-            <div className="flex justify-between items-center text-xs text-gray-500">
-              <span>Tasa BCV oficial</span>
-              <span className="font-semibold text-gray-700">Bs. {Number(actualOficialBCV || 0).toFixed(2)} / USD</span>
+          <div className="grid grid-cols-2 gap-2 mb-3 text-sm">
+            <div className="rounded-lg border border-gray-200 p-2.5 bg-gray-50">
+              <div className="text-gray-500 text-xs mb-0.5">Subtotal $</div>
+              <div className="font-black text-lg text-gray-900 tabular-nums">${formatUsd(subtotalUSD)}</div>
             </div>
-            {Number(vesMarkupPercentage) > 0 && (
-              <div className="flex justify-between items-center text-xs text-gray-500">
-                <span>Recargo pagos VES</span>
-                <span className="font-medium text-gray-700">+{Number(vesMarkupPercentage)}%</span>
-              </div>
-            )}
-            {selectedPaymentMethod && selectedPaymentMethod.discount_percentage > 0 && (
-                <div className="flex justify-between items-center text-xs">
-                  <span className="text-green-600 font-medium">Dcto {selectedPaymentMethod.name} (-{selectedPaymentMethod.discount_percentage}%)</span>
-                  <span className="font-bold text-green-700">-${Number(discountAmount || 0).toFixed(2)}</span>
+            <div className="rounded-lg border border-purple-200 p-2.5 bg-purple-50">
+              <div className="text-purple-700 text-xs mb-0.5">Subtotal Bs.</div>
+              <div className="font-black text-lg text-purple-900 tabular-nums">Bs. {formatBs(subtotalVES)}</div>
+            </div>
+          </div>
+
+          {(Number(discountAmount) > 0 || Number(surchargeAmount) > 0) && (
+          <div className="space-y-1 mb-3 text-xs">
+            {Number(discountAmount) > 0 && (
+                <div className="flex justify-between items-center">
+                  <span className="text-green-700 font-medium">Descuento</span>
+                  <span className="font-bold text-green-700">-${formatUsd(discountAmount)}</span>
                 </div>
             )}
-            {selectedPaymentMethod && selectedPaymentMethod.surcharge_percentage > 0 && (
-                <div className="flex justify-between items-center text-xs">
-                  <span className="text-amber-600 font-medium">Comisión {selectedPaymentMethod.name} (+{selectedPaymentMethod.surcharge_percentage}%)</span>
-                  <span className="font-bold text-amber-700 font-semibold">+$ {Number(surchargeAmount || 0).toFixed(2)}</span>
+            {Number(surchargeAmount) > 0 && (
+                <div className="flex justify-between items-center">
+                  <span className="text-amber-700 font-medium">Recargo método</span>
+                  <span className="font-bold text-amber-700">+${formatUsd(surchargeAmount)}</span>
                 </div>
             )}
           </div>
+          )}
+
+          {cart.length > 0 && safeNumber(subtotalUSD) <= 0 && (
+            <div className="mb-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2">
+              El producto no tiene precio de venta cargado. Revisa el inventario en admin.
+            </div>
+          )}
 
           
           <div className="flex justify-between items-end mb-6 gap-4">
