@@ -31,6 +31,15 @@ function apiBase() {
   return (import.meta as any).env.VITE_LOCAL_API_URL || 'http://localhost:3032';
 }
 
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  const session = readSession();
+  const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extra };
+  if (session?.access_token) {
+    headers.Authorization = `Bearer ${session.access_token}`;
+  }
+  return headers;
+}
+
 type Filter = { op: string; col: string; val: unknown };
 
 class LocalQuery {
@@ -152,7 +161,7 @@ class LocalQuery {
   private async execute() {
     const res = await fetch(`${apiBase()}/db`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({
         table: this.table,
         action: this.action,
@@ -181,7 +190,7 @@ export function createLocalClient() {
     rpc(name: string, _args?: Record<string, unknown>) {
       return fetch(`${apiBase()}/rpc/${name}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         body: JSON.stringify(_args || {}),
       }).then(async (res) => {
         const json = await res.json();
@@ -232,6 +241,17 @@ export function createLocalClient() {
         return { data: { user: json.user }, error: null };
       },
       async signOut() {
+        const session = readSession();
+        if (session?.access_token) {
+          try {
+            await fetch(`${apiBase()}/auth/logout`, {
+              method: 'POST',
+              headers: authHeaders(),
+            });
+          } catch {
+            /* ignore */
+          }
+        }
         writeSession(null);
         return { error: null };
       },

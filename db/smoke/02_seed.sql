@@ -31,7 +31,7 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.worker_profiles (id, first_name, last_name, document_id, email, role, is_active, password)
 VALUES (
   '11111111-1111-1111-1111-111111111111',
-  'Admin', 'Smoke', 'V00000000', 'admin@caloricofit.com', 'admin', true, 'Calorico123*2026'
+  'Admin', 'Smoke', 'V00000000', 'admin@caloricofit.com', 'admin', true, crypt('Calorico123*2026', gen_salt('bf'))
 )
 ON CONFLICT (id) DO NOTHING;
 
@@ -46,13 +46,14 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.worker_profiles (id, first_name, last_name, document_id, email, role, is_active, password)
 VALUES (
   '22222222-2222-2222-2222-222222222222',
-  'Vendedor', 'Demo', 'V11111111', 'vendedor@caloricofit.com', 'seller', true, 'Calorico123*2026'
+  'Vendedor', 'Demo', 'V11111111', 'vendedor@caloricofit.com', 'seller', true, crypt('Calorico123*2026', gen_salt('bf'))
 )
 ON CONFLICT (id) DO NOTHING;
 
 UPDATE public.worker_profiles
-SET password = 'Calorico123*2026'
-WHERE email IN ('admin@caloricofit.com', 'vendedor@caloricofit.com');
+SET password = crypt('Calorico123*2026', gen_salt('bf'))
+WHERE email IN ('admin@caloricofit.com', 'vendedor@caloricofit.com')
+  AND password NOT LIKE '$2%';
 
 INSERT INTO public.products (name, category, sku, barcode, cost_price, sale_price, stock_quantity, is_active)
 VALUES

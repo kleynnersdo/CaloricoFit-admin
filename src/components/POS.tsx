@@ -2,6 +2,13 @@ import React, { useState, useEffect, useRef } from "react";
 import { ShoppingCart, Search, Trash2, Camera, UserPlus, CreditCard, ChevronDown, Check, LogOut, X, AlertCircle, Coins } from "lucide-react";
 import { Product, CartItem, Customer, PaymentMethod, lineUnitPrice } from "../types";
 import { GLOBAL_CONFIG, cn, emptyToNull } from "../lib/utils";
+import {
+  fetchOfficialBcv,
+  formatBs,
+  resolveBcvRate,
+  usdToVes,
+  vesMarkupMultiplier,
+} from "../lib/bcv";
 import BarcodeScanner from "./BarcodeScanner";
 import { supabase } from "../lib/supabase";
 import * as htmlToImage from "html-to-image";
@@ -109,19 +116,6 @@ export default function POS({ onLogout }: POSProps) {
   const [selectedMultiMethodId, setSelectedMultiMethodId] = useState<string>('');
   const [multiAmountInput, setMultiAmountInput] = useState<string>('');
 
-  const getPaymentUsdEquivalent = (pmId: string, amount: number) => {
-    const pm = paymentMethods.find(p => p.id === pmId);
-    if (!pm) return 0;
-    
-    const isVes = pm.currency === 'VES' || (pm.name || '').toUpperCase().includes('VES') || (pm.name || '').toUpperCase().includes('PAGO MÓVIL') || (pm.name || '').toUpperCase().includes('PAGOMOVIL') || (pm.name || '').toUpperCase().includes('PUNTO');
-    
-    if (isVes) {
-      const rate = actualOficialBCV * markupMultiplier;
-      return rate > 0 ? amount / rate : 0;
-    }
-    return amount;
-  };
-
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -132,7 +126,7 @@ export default function POS({ onLogout }: POSProps) {
     const fetchSettings = async () => {
       try {
         const { data: vesData } = await supabase.from('settings').select('value').eq('id', 'ves_markup_percentage').single();
-        if (vesData) setVesMarkupPercentage(vesData.value);
+        if (vesData) setVesMarkupPercentage(Number(vesData.value) || 0);
 
         let wpData = null;
         try {
@@ -161,32 +155,10 @@ export default function POS({ onLogout }: POSProps) {
         }
       } catch (e) {}
 
-      // Fetch official rate from api with fallback
       try {
-        let fetchedRate: number | null = null;
-        let fetchedDate = new Date().toISOString().split('T')[0];
-        try {
-          const response = await fetch('https://ve.dolarapi.com/v1/dolares/oficial');
-          if (response.ok) {
-            const json = await response.json();
-            if (json && typeof json.promedio === 'number') {
-              fetchedRate = json.promedio;
-              if (json.fechaActualizacion) {
-                fetchedDate = json.fechaActualizacion.split('T')[0];
-              }
-            }
-          }
-        } catch {
-          // Silent fallback on network/CORS error
-        }
-
-        if (fetchedRate) {
-          setOfficialBcv({ rate: fetchedRate, date: fetchedDate });
-        } else {
-          setOfficialBcv({ rate: 36.50, date: fetchedDate });
-        }
+        setOfficialBcv(await fetchOfficialBcv());
       } catch {
-        setOfficialBcv({ rate: 36.50, date: new Date().toISOString().split('T')[0] });
+        setOfficialBcv({ rate: GLOBAL_CONFIG.BCV_RATE, date: new Date().toISOString().split('T')[0] });
       }
     }
     fetchSettings();
@@ -527,9 +499,22 @@ export default function POS({ onLogout }: POSProps) {
 
   const totalUSD = subtotalUSD - discountAmount + surchargeAmount;
   
-  const actualOficialBCV = officialBcv ? officialBcv.rate : 36.5;
-  const markupMultiplier = 1 + (vesMarkupPercentage / 100);
-  const totalVES = totalUSD * markupMultiplier * actualOficialBCV;
+  const actualOficialBCV = resolveBcvRate(officialBcv?.rate);
+  const markupMultiplier = vesMarkupMultiplier(vesMarkupPercentage);
+  const totalVES = usdToVes(totalUSD, actualOficialBCV, vesMarkupPercentage);
+
+  const getPaymentUsdEquivalent = (pmId: string, amount: number) => {
+    const pm = paymentMethods.find(p => p.id === pmId);
+    if (!pm) return 0;
+
+    const isVes = pm.currency === 'VES' || (pm.name || '').toUpperCase().includes('VES') || (pm.name || '').toUpperCase().includes('PAGO MÓVIL') || (pm.name || '').toUpperCase().includes('PAGOMOVIL') || (pm.name || '').toUpperCase().includes('PUNTO');
+
+    if (isVes) {
+      const rate = actualOficialBCV * markupMultiplier;
+      return rate > 0 ? amount / rate : 0;
+    }
+    return amount;
+  };
 
   const isUsdtSale = (s: any) =>
     s.currency_used === 'USDT' ||
@@ -590,11 +575,32 @@ export default function POS({ onLogout }: POSProps) {
   };
 
   const getEffectiveVesRate = (s: any) => {
-    const rate = Number(s.exchange_rate_applied) || actualOficialBCV;
-    if (rate <= (actualOficialBCV * 1.05) && vesMarkupPercentage > 0) {
+    const applied = Number(s.exchange_rate_applied);
+    const rate = Number.isFinite(applied) && applied > 0 ? applied : actualOficialBCV;
+    const markupPct = Number(vesMarkupPercentage) || 0;
+    if (rate <= actualOficialBCV * 1.05 && markupPct > 0) {
       return rate * markupMultiplier;
     }
     return rate;
+  };
+
+  const formatSaleRowAmount = (s: any) => {
+    if (s.payment_method?.startsWith('MIXTO|')) {
+      try {
+        const data = JSON.parse(s.payment_method.split('|')[1]);
+        const parts: string[] = [];
+        if (Number(data.USD) > 0) parts.push(`$${Number(data.USD).toFixed(2)}`);
+        if (Number(data.USDT) > 0) parts.push(`$${Number(data.USDT).toFixed(2)} USDT`);
+        if (Number(data.VES) > 0) parts.push(`Bs. ${formatBs(data.VES)}`);
+        if (parts.length) return parts.join(' + ');
+      } catch {
+        /* fall through */
+      }
+    }
+    if (isVesSale(s)) {
+      return `Bs. ${formatBs(Number(s.total_usd) * getEffectiveVesRate(s))}`;
+    }
+    return `$${Number(s.total_usd).toFixed(2)}`;
   };
   
   let pointsRequired = 0;
@@ -1197,7 +1203,7 @@ export default function POS({ onLogout }: POSProps) {
                               <tr key={s.id} className="hover:bg-gray-50">
                                  <td className="p-2 text-xs">{new Date(s.created_at).toLocaleTimeString()}</td>
                                  <td className="p-2 font-medium text-xs">{s.payment_method || 'Efectivo USD'} ({s.currency_used || 'USD'})</td>
-                                 <td className="p-2 font-bold text-right text-xs">${Number(s.total_usd).toFixed(2)}</td>
+                                 <td className="p-2 font-bold text-right text-xs">{formatSaleRowAmount(s)}</td>
                               </tr>
                           ))}
                           {todaySales.length === 0 && (
@@ -1226,7 +1232,7 @@ export default function POS({ onLogout }: POSProps) {
                     <div className="bg-purple-50 p-2.5 rounded-lg border border-purple-200">
                       <span className="text-purple-800 font-medium block">VES (PagoMóvil/Punto):</span>
                       <span className="text-purple-950 font-bold text-sm">
-                        Bs. {getSystemVES(todaySales).toFixed(2)}
+                        Bs. {formatBs(getSystemVES(todaySales))}
                       </span>
                     </div>
                  </div>
@@ -1737,7 +1743,7 @@ export default function POS({ onLogout }: POSProps) {
           <div className="space-y-1 mb-4 p-3 bg-gray-50 rounded-lg border border-gray-100">
             <div className="flex justify-between items-center text-xs">
               <span className="text-gray-500">Tasa BCV Oficial ({Number(actualOficialBCV || 0).toFixed(2)})</span>
-              <span className="font-semibold text-gray-700">Bs. {Number(totalVES || 0).toFixed(2)}</span>
+              <span className="font-semibold text-gray-700">Bs. {formatBs(totalVES)}</span>
             </div>
             {selectedPaymentMethod && selectedPaymentMethod.discount_percentage > 0 && (
                 <div className="flex justify-between items-center text-xs">

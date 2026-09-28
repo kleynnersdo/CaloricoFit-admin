@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { LogOut, Users, Package, BarChart3, Settings, Plus, Edit, Trash2, Calendar, FileText, Bell, CheckCircle, X, Download, HelpCircle, Eye, EyeOff, Printer, AlertTriangle, Ban } from 'lucide-react';
-import { emptyToNull } from '../lib/utils';
+import { emptyToNull, GLOBAL_CONFIG } from '../lib/utils';
+import { fetchOfficialBcv, formatBs, resolveBcvRate } from '../lib/bcv';
 import { addDays, format, differenceInDays, startOfDay, startOfWeek, startOfMonth } from 'date-fns';
 import * as XLSX from 'xlsx';
 
@@ -577,7 +578,7 @@ export default function AdminDashboard({ onLogout }: Props) {
   const fetchSettings = async () => {
     // Fetch stored markup percentage
     const { data: vesData } = await supabase.from('settings').select('value').eq('id', 'ves_markup_percentage').single();
-    if (vesData) setVesMarkupPercentage(vesData.value);
+    if (vesData) setVesMarkupPercentage(Number(vesData.value) || 0);
 
     // Fetch whatsapp message (ignoring error if column does not exist yet)
     let wpData = null;
@@ -607,32 +608,10 @@ export default function AdminDashboard({ onLogout }: Props) {
         });
     }
 
-    // Fetch official rate from api with fallback
     try {
-      let fetchedRate: number | null = null;
-      let fetchedDate = new Date().toISOString().split('T')[0];
-      try {
-        const response = await fetch('https://ve.dolarapi.com/v1/dolares/oficial');
-        if (response.ok) {
-          const json = await response.json();
-          if (json && typeof json.promedio === 'number') {
-            fetchedRate = json.promedio;
-            if (json.fechaActualizacion) {
-              fetchedDate = json.fechaActualizacion.split('T')[0];
-            }
-          }
-        }
-      } catch {
-        // Silent fallback on network/CORS error
-      }
-
-      if (fetchedRate) {
-        setOfficialBcv({ rate: fetchedRate, date: fetchedDate });
-      } else {
-        setOfficialBcv({ rate: 36.50, date: fetchedDate });
-      }
+      setOfficialBcv(await fetchOfficialBcv());
     } catch {
-      setOfficialBcv({ rate: 36.50, date: new Date().toISOString().split('T')[0] });
+      setOfficialBcv({ rate: GLOBAL_CONFIG.BCV_RATE, date: new Date().toISOString().split('T')[0] });
     }
   };
 
@@ -1917,7 +1896,7 @@ export default function AdminDashboard({ onLogout }: Props) {
                     <h3 className="font-bold text-gray-700 text-sm mb-2 uppercase">Tasa Oficial BCV</h3>
                     {officialBcv ? (
                         <>
-                            <div className="text-3xl font-black text-gray-900">Bs. {Number(officialBcv.rate || 0).toFixed(2)}</div>
+                            <div className="text-3xl font-black text-gray-900">Bs. {formatBs(resolveBcvRate(officialBcv.rate))}</div>
                             <div className="text-sm text-gray-500 mt-1">Actualizado: {officialBcv.date}</div>
                         </>
                     ) : (
@@ -1942,7 +1921,7 @@ export default function AdminDashboard({ onLogout }: Props) {
                 </div>
                 {officialBcv && (
                     <div className="mt-4 text-sm text-gray-500 bg-orange-50 text-orange-800 p-3 rounded">
-                        Ejemplo: Un producto de $100 se cobrará a ${(100 * (1 + vesMarkupPercentage/100)).toFixed(2)} y luego se convertirá a Bolívares usando Bs. {Number(officialBcv.rate || 0).toFixed(2)}. Total aproximado: Bs. {(100 * (1 + vesMarkupPercentage/100) * officialBcv.rate).toFixed(2)}
+                        Ejemplo: Un producto de $100 se cobrará a ${(100 * (1 + (Number(vesMarkupPercentage) || 0)/100)).toFixed(2)} y luego se convertirá a Bolívares usando Bs. {formatBs(resolveBcvRate(officialBcv.rate))}. Total aproximado: Bs. {formatBs(100 * (1 + (Number(vesMarkupPercentage) || 0)/100) * resolveBcvRate(officialBcv.rate))}
                     </div>
                 )}
              </div>
