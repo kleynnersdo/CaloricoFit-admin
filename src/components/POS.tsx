@@ -9,6 +9,7 @@ import {
   resolveBcvRate,
   safeNumber,
   usdToVes,
+  usdToVesReference,
   vesMarkupMultiplier,
 } from "../lib/bcv";
 import BarcodeScanner from "./BarcodeScanner";
@@ -530,10 +531,26 @@ export default function POS({ onLogout }: POSProps) {
 
   const actualOficialBCV = resolveBcvRate(officialBcv?.rate);
   const markupMultiplier = vesMarkupMultiplier(vesMarkupPercentage);
-  const toVes = (usd: number) => usdToVes(usd, actualOficialBCV, vesMarkupPercentage);
-  const subtotalVES = toVes(safeNumber(subtotalUSD));
-  const totalVES = toVes(totalUSD);
+  /** Factura, subtotales y equivalencia informativa (sin recargo %). */
+  const toVesRef = (usd: number) => usdToVesReference(usd, actualOficialBCV);
+  /** Monto a cobrar en Pago Móvil / Punto (BCV + recargo configurado). */
+  const toVesPayment = (usd: number) => usdToVes(usd, actualOficialBCV, vesMarkupPercentage);
+  const subtotalVES = toVesRef(safeNumber(subtotalUSD));
+  const totalVESRef = toVesRef(totalUSD);
+  const totalVesToCollect = toVesPayment(totalUSD);
   const vesPerUsdForChange = actualOficialBCV * markupMultiplier;
+
+  const isVesPaymentMethod = (pm: PaymentMethod | null | undefined) => {
+    if (!pm) return false;
+    const name = (pm.name || '').toUpperCase();
+    return (
+      pm.currency === 'VES' ||
+      name.includes('PAGO MÓVIL') ||
+      name.includes('PAGOMOVIL') ||
+      name.includes('PUNTO') ||
+      name.includes('VES')
+    );
+  };
 
   const getPaymentUsdEquivalent = (pmId: string, amount: number) => {
     const pm = paymentMethods.find(p => p.id === pmId);
@@ -913,30 +930,30 @@ export default function POS({ onLogout }: POSProps) {
                       <div className="col-span-6 line-clamp-1 truncate pr-2">
                         {item.product.name}{item.product.flavor ? ` (${item.product.flavor})` : ''}{item.isWholesale ? ' · MAYOR' : ''}
                       </div>
-                      <div className="col-span-4 text-right">Bs. {formatBs(toVes(Number(lineUnitPrice(item)) * Number(item.quantity)))}</div>
+                      <div className="col-span-4 text-right">Bs. {formatBs(toVesRef(Number(lineUnitPrice(item)) * Number(item.quantity)))}</div>
                     </div>
                   ))}
                 </div>
                 {loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Puntos:</span>
-                     <span>- Bs. {formatBs(toVes(loyaltyDiscountAmount))}</span>
+                     <span>- Bs. {formatBs(toVesRef(loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {discountAmount - loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Adicional:</span>
-                     <span>- Bs. {formatBs(toVes(discountAmount - loyaltyDiscountAmount))}</span>
+                     <span>- Bs. {formatBs(toVesRef(discountAmount - loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {surchargeAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Recargo Adicional:</span>
-                     <span>+ Bs. {formatBs(toVes(surchargeAmount))}</span>
+                     <span>+ Bs. {formatBs(toVesRef(surchargeAmount))}</span>
                    </div>
                 )}
                 <div className="text-right mt-2 text-base font-bold text-gray-900">
-                  TOTAL A PAGAR: Bs. {formatBs(totalVES)}
+                  TOTAL A PAGAR: Bs. {formatBs(totalVESRef)}
                 </div>
               </div>
 
@@ -1086,9 +1103,9 @@ export default function POS({ onLogout }: POSProps) {
                          return sum + getPaymentUsdEquivalent(pmId, amount as number);
                        }, 0);
                        const remainingMultiUSD = Math.max(0, totalUSD - totalPaidMultiUSD);
-                       const remainingMultiVES = toVes(remainingMultiUSD);
+                       const remainingMultiVES = toVesRef(remainingMultiUSD);
                        const overpaidMultiUSD = Math.max(0, totalPaidMultiUSD - totalUSD);
-                       const overpaidMultiVES = toVes(overpaidMultiUSD);
+                       const overpaidMultiVES = toVesRef(overpaidMultiUSD);
 
                        return (
                           <div className="p-3 bg-white rounded-lg border border-gray-200 text-xs space-y-1.5 shadow-sm">
@@ -1098,7 +1115,7 @@ export default function POS({ onLogout }: POSProps) {
                              </div>
                              <div className="flex justify-between font-medium">
                                 <span className="text-gray-500 font-semibold">Equivalente Bs. (venta):</span>
-                                <span className="font-bold text-purple-700">Bs. {formatBs(totalVES)}</span>
+                                <span className="font-bold text-purple-700">Bs. {formatBs(totalVESRef)}</span>
                              </div>
                              <div className="flex justify-between font-medium">
                                 <span className="text-gray-500 font-semibold">Total Recibido USD:</span>
@@ -1159,7 +1176,9 @@ export default function POS({ onLogout }: POSProps) {
                        <div className="mt-3 text-right">
                            <div className="text-sm text-gray-500">Monto Final:</div>
                            <div className="text-2xl font-black text-gray-900">
-                              {selectedPaymentMethod.currency === 'VES' ? `Bs. ${formatBs(totalVES)}` : `$${formatUsd(totalUSD)}`}
+                              {isVesPaymentMethod(selectedPaymentMethod)
+                                ? `Bs. ${formatBs(totalVesToCollect)}`
+                                : `$${formatUsd(totalUSD)}`}
                            </div>
                        </div>
                    )}
@@ -1762,7 +1781,7 @@ export default function POS({ onLogout }: POSProps) {
               </div>
               <div className="text-right flex flex-col justify-between">
                 <div className="font-bold whitespace-nowrap text-gray-900">${formatUsd(Number(lineUnitPrice(item)) * Number(item.quantity))}</div>
-                <div className="text-xs font-bold text-purple-700">Bs. {formatBs(toVes(Number(lineUnitPrice(item)) * Number(item.quantity)))}</div>
+                <div className="text-xs font-bold text-purple-700">Bs. {formatBs(toVesRef(Number(lineUnitPrice(item)) * Number(item.quantity)))}</div>
                 <div className="text-xs text-gray-400 font-medium">u/${formatUsd(lineUnitPrice(item))}</div>
               </div>
             </div>
@@ -1784,7 +1803,9 @@ export default function POS({ onLogout }: POSProps) {
               <div className="text-[10px] opacity-70 mt-1 text-right">Ref. {officialBcv.date}</div>
             )}
             {Number(vesMarkupPercentage) > 0 && (
-              <div className="text-[11px] mt-1 opacity-90">Recargo VES: +{Number(vesMarkupPercentage)}% incluido en Bs.</div>
+              <div className="text-[11px] mt-1 opacity-90">
+                Recargo +{Number(vesMarkupPercentage)}% solo al cobrar en bolívares (subtotal y factura: BCV oficial).
+              </div>
             )}
           </div>
 
@@ -1827,7 +1848,7 @@ export default function POS({ onLogout }: POSProps) {
             <span className="text-lg font-bold text-gray-900">Total a Pagar</span>
             <div className="text-right">
               <div className="text-3xl font-black text-orange-500 leading-none">${formatUsd(totalUSD)}</div>
-              <div className="text-xl font-black text-purple-700 leading-tight mt-1">Bs. {formatBs(totalVES)}</div>
+              <div className="text-xl font-black text-purple-700 leading-tight mt-1">Bs. {formatBs(totalVESRef)}</div>
             </div>
           </div>
           
@@ -1887,9 +1908,15 @@ export default function POS({ onLogout }: POSProps) {
                     <span className="font-bold text-gray-900">${formatUsd(totalUSD)}</span>
                   </div>
                   <div className="flex justify-between font-medium text-purple-800">
-                    <span>Total a cobrar (Bs.)</span>
-                    <span className="font-bold">Bs. {formatBs(totalVES)}</span>
+                    <span>Referencia BCV (Bs.)</span>
+                    <span className="font-bold">Bs. {formatBs(totalVESRef)}</span>
                   </div>
+                  {Number(vesMarkupPercentage) > 0 && (
+                    <div className="flex justify-between font-medium text-purple-900">
+                      <span>A cobrar en Bs. (+{Number(vesMarkupPercentage)}%)</span>
+                      <span className="font-bold">Bs. {formatBs(totalVesToCollect)}</span>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -1907,7 +1934,8 @@ export default function POS({ onLogout }: POSProps) {
 
                 {(() => {
                   const received = safeNumber(receivedAmount);
-                  const changeVes = Math.max(0, received - totalVES);
+                  const vesDue = changeCurrency === 'VES' ? totalVesToCollect : totalVESRef;
+                  const changeVes = Math.max(0, received - vesDue);
                   const changeUsdFromVesInput = vesPerUsdForChange > 0 ? changeVes / vesPerUsdForChange : 0;
                   const changeUsd = Math.max(0, received - totalUSD);
                   const changeVesFromUsdInput = changeUsd * vesPerUsdForChange;
@@ -1918,7 +1946,7 @@ export default function POS({ onLogout }: POSProps) {
                     <div className="text-right">
                        {changeCurrency === 'VES' ? (
                           <>
-                            <div className={`font-black text-lg ${received >= totalVES ? 'text-green-600' : 'text-red-500'}`}>
+                            <div className={`font-black text-lg ${received >= vesDue ? 'text-green-600' : 'text-red-500'}`}>
                               Bs. {formatBs(changeVes)}
                             </div>
                             <div className="text-gray-500 text-xs font-semibold">

@@ -38,6 +38,11 @@ export function usdToVes(
   return Number.isFinite(ves) ? ves : 0;
 }
 
+/** Bs. de referencia / factura: solo tasa BCV, sin recargo VES. */
+export function usdToVesReference(totalUsd: unknown, bcvRate: unknown): number {
+  return usdToVes(totalUsd, bcvRate, 0);
+}
+
 export function formatBs(amount: unknown): string {
   const n = Number(amount);
   return Number.isFinite(n) ? n.toFixed(2) : '0.00';
