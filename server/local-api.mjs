@@ -122,8 +122,8 @@ async function requireAuth(req, res, next) {
 
     const { rows } = await pool.query(
       `SELECT s.expires_at, w.id, w.email, w.role, w.is_active
-       FROM sessions s
-       JOIN worker_profiles w ON w.id = s.user_id
+       FROM public.sessions s
+       JOIN public.worker_profiles w ON w.id = s.user_id
        WHERE s.token = $1
        LIMIT 1`,
       [token]
@@ -226,9 +226,9 @@ app.post('/auth/login', async (req, res) => {
     }
 
     const token = crypto.randomBytes(32).toString('hex');
-    await pool.query('DELETE FROM sessions WHERE expires_at <= now()');
+    await pool.query('DELETE FROM public.sessions WHERE expires_at <= now()');
     await pool.query(
-      "INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, now() + interval '30 days')",
+      "INSERT INTO public.sessions (token, user_id, expires_at) VALUES ($1, $2, now() + interval '30 days')",
       [token, user.id]
     );
 
@@ -252,13 +252,19 @@ app.post('/auth/login', async (req, res) => {
     });
   } catch (e) {
     console.error(e);
-    res.status(500).json({ error: String(e.message || e) });
+    const msg = String(e.message || e);
+    if (msg.includes('sessions') && msg.includes('does not exist')) {
+      return res.status(503).json({
+        error: 'Base de datos sin migrar (tabla sessions). Contacta al administrador o reinicia la API.',
+      });
+    }
+    res.status(500).json({ error: msg });
   }
 });
 
 app.post('/auth/logout', requireAuth, async (req, res) => {
   try {
-    await pool.query('DELETE FROM sessions WHERE token = $1', [req.authToken]);
+    await pool.query('DELETE FROM public.sessions WHERE token = $1', [req.authToken]);
     res.json({ ok: true });
   } catch (e) {
     console.error(e);
@@ -727,6 +733,42 @@ async function hashPlaintextPasswords(client) {
   );
 }
 
-app.listen(PORT, HOST, () => {
-  console.log(`[local-api] http://${HOST}:${PORT} → Postgres local`);
-});
+/** Idempotente: evita error "relation sessions does not exist" si el deploy no corrió 04_security.sql */
+async function ensureSecuritySchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.sessions (
+      token TEXT PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES public.worker_profiles(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL,
+      expires_at TIMESTAMPTZ NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON public.sessions (user_id);
+    CREATE INDEX IF NOT EXISTS sessions_expires_at_idx ON public.sessions (expires_at);
+    CREATE TABLE IF NOT EXISTS public.audit_log (
+      id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+      actor_id UUID REFERENCES public.worker_profiles(id) ON DELETE SET NULL,
+      actor_email TEXT,
+      action TEXT NOT NULL,
+      entity TEXT NOT NULL,
+      entity_id TEXT,
+      detail JSONB DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS audit_log_created_at_idx ON public.audit_log (created_at);
+    CREATE INDEX IF NOT EXISTS audit_log_entity_idx ON public.audit_log (entity, action);
+  `);
+  await pool.query(
+    "UPDATE public.worker_profiles SET password = crypt(password, gen_salt('bf')) WHERE password IS NOT NULL AND password NOT LIKE '$2%'"
+  );
+}
+
+ensureSecuritySchema()
+  .then(() => {
+    app.listen(PORT, HOST, () => {
+      console.log(`[local-api] http://${HOST}:${PORT} → Postgres local`);
+    });
+  })
+  .catch((e) => {
+    console.error('[local-api] No se pudo inicializar el esquema de seguridad:', e);
+    process.exit(1);
+  });
