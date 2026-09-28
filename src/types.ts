@@ -43,22 +43,47 @@ export interface PaymentMethod {
   is_active: boolean;
 }
 
+/** Postgres / JSON a veces devuelve NUMERIC como string. */
+export function coerceMoney(value: unknown): number {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const cleaned = String(value).trim().replace(/\s/g, '').replace(',', '.');
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+}
+
 export function normalizeProduct(raw: Product): Product {
   return {
     ...raw,
-    sale_price: Number(raw.sale_price) || 0,
-    cost_price: Number(raw.cost_price) || 0,
-    wholesale_price: Number(raw.wholesale_price) || 0,
-    min_wholesale_qty: Number(raw.min_wholesale_qty) || 0,
-    stock_quantity: Number(raw.stock_quantity) || 0,
+    sale_price: coerceMoney(raw.sale_price),
+    cost_price: coerceMoney(raw.cost_price),
+    wholesale_price: coerceMoney(raw.wholesale_price),
+    min_wholesale_qty: coerceMoney(raw.min_wholesale_qty),
+    stock_quantity: coerceMoney(raw.stock_quantity),
   };
 }
 
-export function lineUnitPrice(item: CartItem): number {
-  const retail = Number(item.product.sale_price);
-  const wholesale = Number(item.product.wholesale_price);
-  if (item.isWholesale && Number.isFinite(wholesale) && wholesale > 0) {
-    return wholesale;
+/** Precio actualizado desde inventario si el snapshot del carrito no trae sale_price. */
+export function resolveCartProduct(item: CartItem, inventory?: Product[]): Product {
+  const fresh = inventory?.find((p) => p.id === item.product.id);
+  return normalizeProduct(fresh ?? item.product);
+}
+
+export function cartLineQty(item: CartItem): number {
+  const q = Math.floor(Number(item.quantity));
+  return Number.isFinite(q) && q > 0 ? q : 0;
+}
+
+export function lineUnitPrice(item: CartItem, inventory?: Product[]): number {
+  const product = resolveCartProduct(item, inventory);
+  if (item.isWholesale && product.wholesale_price > 0) {
+    return product.wholesale_price;
   }
-  return Number.isFinite(retail) ? retail : 0;
+  return product.sale_price;
+}
+
+export function cartLineSubtotalUsd(item: CartItem, inventory?: Product[]): number {
+  const qty = cartLineQty(item);
+  if (qty <= 0) return 0;
+  return lineUnitPrice(item, inventory) * qty;
 }

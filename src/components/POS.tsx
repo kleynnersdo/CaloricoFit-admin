@@ -1,6 +1,15 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { ShoppingCart, Search, Trash2, Camera, UserPlus, CreditCard, ChevronDown, Check, LogOut, X, AlertCircle, Coins } from "lucide-react";
-import { Product, CartItem, Customer, PaymentMethod, lineUnitPrice, normalizeProduct } from "../types";
+import {
+  Product,
+  CartItem,
+  Customer,
+  PaymentMethod,
+  cartLineSubtotalUsd,
+  cartLineQty,
+  lineUnitPrice,
+  normalizeProduct,
+} from "../types";
 import { GLOBAL_CONFIG, cn, emptyToNull } from "../lib/utils";
 import {
   fetchOfficialBcv,
@@ -8,9 +17,7 @@ import {
   formatUsd,
   resolveBcvRate,
   safeNumber,
-  usdToVes,
   usdToVesReference,
-  vesMarkupMultiplier,
 } from "../lib/bcv";
 import BarcodeScanner from "./BarcodeScanner";
 import { supabase } from "../lib/supabase";
@@ -92,7 +99,6 @@ export default function POS({ onLogout }: POSProps) {
   
   // Nuevo estado para formulario rápido de cliente
   const [newCustomerForm, setNewCustomerForm] = useState({ ...emptyQuickCustomer });
-  const [vesMarkupPercentage, setVesMarkupPercentage] = useState(0);
   const [officialBcv, setOfficialBcv] = useState<{rate: number, date: string} | null>(null);
   const [bcvLoading, setBcvLoading] = useState(true);
   const [loyaltyEarningRate, setLoyaltyEarningRate] = useState(10);
@@ -129,9 +135,6 @@ export default function POS({ onLogout }: POSProps) {
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const { data: vesData } = await supabase.from('settings').select('value').eq('id', 'ves_markup_percentage').single();
-        if (vesData) setVesMarkupPercentage(Number(vesData.value) || 0);
-
         let wpData = null;
         try {
             const res = await supabase.from('settings').select('text_value').eq('id', 'whatsapp_message').single();
@@ -213,7 +216,17 @@ export default function POS({ onLogout }: POSProps) {
     const bcvTimer = window.setInterval(refreshBcv, 5 * 60 * 1000);
     return () => window.clearInterval(bcvTimer);
   }, []);
-  
+
+  useEffect(() => {
+    if (!inventory.length || !cart.length) return;
+    setCart((prev) =>
+      prev.map((item) => {
+        const fresh = inventory.find((p) => p.id === item.product.id);
+        return fresh ? { ...item, product: fresh } : item;
+      })
+    );
+  }, [inventory]);
+
   // Buscar productos dinámicamente
   const searchResults = searchTerm.length >= 2 
     ? inventory.filter(p => {
@@ -228,35 +241,36 @@ export default function POS({ onLogout }: POSProps) {
     : [];
 
   const handleAddToCart = (product: Product) => {
-    const wantsWholesale = isWholesaleMode && Number(product.wholesale_price) > 0;
+    const normalized = normalizeProduct(product);
+    const wantsWholesale = isWholesaleMode && Number(normalized.wholesale_price) > 0;
     if (isWholesaleMode && !wantsWholesale) {
       showToast("Este producto no tiene precio al mayor configurado. Se agregó a precio de venta.");
     }
-    const minQty = wantsWholesale ? Math.max(1, Number(product.min_wholesale_qty) || 1) : 1;
+    const minQty = wantsWholesale ? Math.max(1, Number(normalized.min_wholesale_qty) || 1) : 1;
 
     setCart(prev => {
-      const existing = prev.find(item => item.product.id === product.id && !!item.isWholesale === wantsWholesale);
+      const existing = prev.find(item => item.product.id === normalized.id && !!item.isWholesale === wantsWholesale);
       if (existing) {
         const nextQty = existing.quantity + 1;
-        if (nextQty > product.stock_quantity) {
-          showToast(`Stock insuficiente. Solo quedan ${product.stock_quantity} unidades.`);
+        if (nextQty > normalized.stock_quantity) {
+          showToast(`Stock insuficiente. Solo quedan ${normalized.stock_quantity} unidades.`);
           return prev;
         }
         return prev.map(item =>
-          item.product.id === product.id && !!item.isWholesale === wantsWholesale
-            ? { ...item, quantity: nextQty }
+          item.product.id === normalized.id && !!item.isWholesale === wantsWholesale
+            ? { ...item, quantity: nextQty, product: normalized }
             : item
         );
       }
-      if (product.stock_quantity <= 0) {
+      if (normalized.stock_quantity <= 0) {
         showToast("Producto agotado.");
         return prev;
       }
-      if (minQty > product.stock_quantity) {
+      if (minQty > normalized.stock_quantity) {
         showToast(`Stock insuficiente para la cantidad mínima al mayor (${minQty}).`);
         return prev;
       }
-      return [...prev, { product, quantity: minQty, isWholesale: wantsWholesale }];
+      return [...prev, { product: normalized, quantity: minQty, isWholesale: wantsWholesale }];
     });
     setSearchTerm("");
   };
@@ -477,10 +491,9 @@ export default function POS({ onLogout }: POSProps) {
     }
   };
 
-  // Cálculos Multi-moneda (precio unitario snapshot: retail o mayor)
-  const subtotalUSD = cart.reduce(
-    (sum, item) => sum + Number(lineUnitPrice(item)) * Number(item.quantity || 0),
-    0
+  const subtotalUSD = useMemo(
+    () => cart.reduce((sum, item) => sum + cartLineSubtotalUsd(item, inventory), 0),
+    [cart, inventory]
   );
   const cartHasWholesale = cart.some(item => item.isWholesale);
 
@@ -530,27 +543,10 @@ export default function POS({ onLogout }: POSProps) {
   const totalUSD = safeNumber(subtotalUSD - discountAmount + surchargeAmount);
 
   const actualOficialBCV = resolveBcvRate(officialBcv?.rate);
-  const markupMultiplier = vesMarkupMultiplier(vesMarkupPercentage);
-  /** Factura, subtotales y equivalencia informativa (sin recargo %). */
-  const toVesRef = (usd: number) => usdToVesReference(usd, actualOficialBCV);
-  /** Monto a cobrar en Pago Móvil / Punto (BCV + recargo configurado). */
-  const toVesPayment = (usd: number) => usdToVes(usd, actualOficialBCV, vesMarkupPercentage);
-  const subtotalVES = toVesRef(safeNumber(subtotalUSD));
-  const totalVESRef = toVesRef(totalUSD);
-  const totalVesToCollect = toVesPayment(totalUSD);
-  const vesPerUsdForChange = actualOficialBCV * markupMultiplier;
-
-  const isVesPaymentMethod = (pm: PaymentMethod | null | undefined) => {
-    if (!pm) return false;
-    const name = (pm.name || '').toUpperCase();
-    return (
-      pm.currency === 'VES' ||
-      name.includes('PAGO MÓVIL') ||
-      name.includes('PAGOMOVIL') ||
-      name.includes('PUNTO') ||
-      name.includes('VES')
-    );
-  };
+  const toVes = (usd: number) => usdToVesReference(usd, actualOficialBCV);
+  const subtotalVES = toVes(safeNumber(subtotalUSD));
+  const totalVES = toVes(totalUSD);
+  const vesPerUsdForChange = actualOficialBCV;
 
   const getPaymentUsdEquivalent = (pmId: string, amount: number) => {
     const pm = paymentMethods.find(p => p.id === pmId);
@@ -559,8 +555,7 @@ export default function POS({ onLogout }: POSProps) {
     const isVes = pm.currency === 'VES' || (pm.name || '').toUpperCase().includes('VES') || (pm.name || '').toUpperCase().includes('PAGO MÓVIL') || (pm.name || '').toUpperCase().includes('PAGOMOVIL') || (pm.name || '').toUpperCase().includes('PUNTO');
 
     if (isVes) {
-      const rate = actualOficialBCV * markupMultiplier;
-      return rate > 0 ? amount / rate : 0;
+      return actualOficialBCV > 0 ? amount / actualOficialBCV : 0;
     }
     return amount;
   };
@@ -626,10 +621,6 @@ export default function POS({ onLogout }: POSProps) {
   const getEffectiveVesRate = (s: any) => {
     const applied = Number(s.exchange_rate_applied);
     const rate = Number.isFinite(applied) && applied > 0 ? applied : actualOficialBCV;
-    const markupPct = Number(vesMarkupPercentage) || 0;
-    if (rate <= actualOficialBCV * 1.05 && markupPct > 0) {
-      return rate * markupMultiplier;
-    }
     return rate;
   };
 
@@ -779,9 +770,7 @@ export default function POS({ onLogout }: POSProps) {
           currencyUsed = 'USDT';
         }
 
-        rateToSave = (currencyUsed === 'VES' || (selectedPaymentMethod!.name || '').toUpperCase().includes('VES') || (selectedPaymentMethod!.name || '').toUpperCase().includes('PAGO MÓVIL') || (selectedPaymentMethod!.name || '').toUpperCase().includes('PAGOMOVIL') || (selectedPaymentMethod!.name || '').toUpperCase().includes('PUNTO'))
-          ? actualOficialBCV * markupMultiplier
-          : actualOficialBCV;
+        rateToSave = actualOficialBCV;
           
         paymentMethodName = selectedPaymentMethod!.name;
       }
@@ -825,14 +814,15 @@ export default function POS({ onLogout }: POSProps) {
 
       // Snapshot de precio/costo al momento de la venta (no se altera si cambia el producto después)
       const saleItems = cart.map((item) => {
-          const unit = lineUnitPrice(item);
+          const unit = lineUnitPrice(item, inventory);
+          const qty = cartLineQty(item);
           return {
             sale_id: sale.id,
             product_id: item.product.id,
-            quantity: item.quantity,
+            quantity: qty,
             unit_price_usd: unit,
-            unit_cost_usd: item.product.cost_price,
-            subtotal_usd: unit * item.quantity
+            unit_cost_usd: normalizeProduct(item.product).cost_price,
+            subtotal_usd: cartLineSubtotalUsd(item, inventory),
           };
       });
 
@@ -862,7 +852,7 @@ export default function POS({ onLogout }: POSProps) {
       
       // Refrescar inventario y ventas del día
       const { data: newInv } = await supabase.from('products').select('*').eq('is_active', true);
-      if (newInv) setInventory(newInv);
+      if (newInv) setInventory(newInv.map((p: Product) => normalizeProduct(p)));
       fetchTodaySales();
       
     } catch (err: any) {
@@ -930,30 +920,30 @@ export default function POS({ onLogout }: POSProps) {
                       <div className="col-span-6 line-clamp-1 truncate pr-2">
                         {item.product.name}{item.product.flavor ? ` (${item.product.flavor})` : ''}{item.isWholesale ? ' · MAYOR' : ''}
                       </div>
-                      <div className="col-span-4 text-right">Bs. {formatBs(toVesRef(Number(lineUnitPrice(item)) * Number(item.quantity)))}</div>
+                      <div className="col-span-4 text-right">Bs. {formatBs(toVes(cartLineSubtotalUsd(item, inventory)))}</div>
                     </div>
                   ))}
                 </div>
                 {loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Puntos:</span>
-                     <span>- Bs. {formatBs(toVesRef(loyaltyDiscountAmount))}</span>
+                     <span>- Bs. {formatBs(toVes(loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {discountAmount - loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Adicional:</span>
-                     <span>- Bs. {formatBs(toVesRef(discountAmount - loyaltyDiscountAmount))}</span>
+                     <span>- Bs. {formatBs(toVes(discountAmount - loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {surchargeAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Recargo Adicional:</span>
-                     <span>+ Bs. {formatBs(toVesRef(surchargeAmount))}</span>
+                     <span>+ Bs. {formatBs(toVes(surchargeAmount))}</span>
                    </div>
                 )}
                 <div className="text-right mt-2 text-base font-bold text-gray-900">
-                  TOTAL A PAGAR: Bs. {formatBs(totalVESRef)}
+                  TOTAL A PAGAR: Bs. {formatBs(totalVES)}
                 </div>
               </div>
 
@@ -1103,9 +1093,9 @@ export default function POS({ onLogout }: POSProps) {
                          return sum + getPaymentUsdEquivalent(pmId, amount as number);
                        }, 0);
                        const remainingMultiUSD = Math.max(0, totalUSD - totalPaidMultiUSD);
-                       const remainingMultiVES = toVesRef(remainingMultiUSD);
+                       const remainingMultiVES = toVes(remainingMultiUSD);
                        const overpaidMultiUSD = Math.max(0, totalPaidMultiUSD - totalUSD);
-                       const overpaidMultiVES = toVesRef(overpaidMultiUSD);
+                       const overpaidMultiVES = toVes(overpaidMultiUSD);
 
                        return (
                           <div className="p-3 bg-white rounded-lg border border-gray-200 text-xs space-y-1.5 shadow-sm">
@@ -1115,7 +1105,7 @@ export default function POS({ onLogout }: POSProps) {
                              </div>
                              <div className="flex justify-between font-medium">
                                 <span className="text-gray-500 font-semibold">Equivalente Bs. (venta):</span>
-                                <span className="font-bold text-purple-700">Bs. {formatBs(totalVESRef)}</span>
+                                <span className="font-bold text-purple-700">Bs. {formatBs(totalVES)}</span>
                              </div>
                              <div className="flex justify-between font-medium">
                                 <span className="text-gray-500 font-semibold">Total Recibido USD:</span>
@@ -1176,8 +1166,8 @@ export default function POS({ onLogout }: POSProps) {
                        <div className="mt-3 text-right">
                            <div className="text-sm text-gray-500">Monto Final:</div>
                            <div className="text-2xl font-black text-gray-900">
-                              {isVesPaymentMethod(selectedPaymentMethod)
-                                ? `Bs. ${formatBs(totalVesToCollect)}`
+                              {selectedPaymentMethod.currency === 'VES'
+                                ? `Bs. ${formatBs(totalVES)}`
                                 : `$${formatUsd(totalUSD)}`}
                            </div>
                        </div>
@@ -1780,9 +1770,9 @@ export default function POS({ onLogout }: POSProps) {
                 </div>
               </div>
               <div className="text-right flex flex-col justify-between">
-                <div className="font-bold whitespace-nowrap text-gray-900">${formatUsd(Number(lineUnitPrice(item)) * Number(item.quantity))}</div>
-                <div className="text-xs font-bold text-purple-700">Bs. {formatBs(toVesRef(Number(lineUnitPrice(item)) * Number(item.quantity)))}</div>
-                <div className="text-xs text-gray-400 font-medium">u/${formatUsd(lineUnitPrice(item))}</div>
+                <div className="font-bold whitespace-nowrap text-gray-900">${formatUsd(cartLineSubtotalUsd(item, inventory))}</div>
+                <div className="text-xs font-bold text-purple-700">Bs. {formatBs(toVes(cartLineSubtotalUsd(item, inventory)))}</div>
+                <div className="text-xs text-gray-400 font-medium">u/${formatUsd(lineUnitPrice(item, inventory))}</div>
               </div>
             </div>
           ))}
@@ -1801,11 +1791,6 @@ export default function POS({ onLogout }: POSProps) {
             </div>
             {officialBcv?.date && (
               <div className="text-[10px] opacity-70 mt-1 text-right">Ref. {officialBcv.date}</div>
-            )}
-            {Number(vesMarkupPercentage) > 0 && (
-              <div className="text-[11px] mt-1 opacity-90">
-                Recargo +{Number(vesMarkupPercentage)}% solo al cobrar en bolívares (subtotal y factura: BCV oficial).
-              </div>
             )}
           </div>
 
@@ -1848,7 +1833,7 @@ export default function POS({ onLogout }: POSProps) {
             <span className="text-lg font-bold text-gray-900">Total a Pagar</span>
             <div className="text-right">
               <div className="text-3xl font-black text-orange-500 leading-none">${formatUsd(totalUSD)}</div>
-              <div className="text-xl font-black text-purple-700 leading-tight mt-1">Bs. {formatBs(totalVESRef)}</div>
+              <div className="text-xl font-black text-purple-700 leading-tight mt-1">Bs. {formatBs(totalVES)}</div>
             </div>
           </div>
           
@@ -1908,15 +1893,9 @@ export default function POS({ onLogout }: POSProps) {
                     <span className="font-bold text-gray-900">${formatUsd(totalUSD)}</span>
                   </div>
                   <div className="flex justify-between font-medium text-purple-800">
-                    <span>Referencia BCV (Bs.)</span>
-                    <span className="font-bold">Bs. {formatBs(totalVESRef)}</span>
+                    <span>Total a cobrar (Bs.)</span>
+                    <span className="font-bold">Bs. {formatBs(totalVES)}</span>
                   </div>
-                  {Number(vesMarkupPercentage) > 0 && (
-                    <div className="flex justify-between font-medium text-purple-900">
-                      <span>A cobrar en Bs. (+{Number(vesMarkupPercentage)}%)</span>
-                      <span className="font-bold">Bs. {formatBs(totalVesToCollect)}</span>
-                    </div>
-                  )}
                 </div>
 
                 <div>
@@ -1934,7 +1913,7 @@ export default function POS({ onLogout }: POSProps) {
 
                 {(() => {
                   const received = safeNumber(receivedAmount);
-                  const vesDue = changeCurrency === 'VES' ? totalVesToCollect : totalVESRef;
+                  const vesDue = totalVES;
                   const changeVes = Math.max(0, received - vesDue);
                   const changeUsdFromVesInput = vesPerUsdForChange > 0 ? changeVes / vesPerUsdForChange : 0;
                   const changeUsd = Math.max(0, received - totalUSD);
