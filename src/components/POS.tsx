@@ -19,7 +19,9 @@ import {
   formatUsd,
   resolveBcvRate,
   safeNumber,
+  usdToVes,
   usdToVesReference,
+  vesMarkupMultiplier,
 } from "../lib/bcv";
 import BarcodeScanner from "./BarcodeScanner";
 import { supabase } from "../lib/supabase";
@@ -54,6 +56,7 @@ export default function POS({ onLogout }: POSProps) {
   };
   const [newCustomerForm, setNewCustomerForm] = useState({ ...emptyQuickCustomer });
   const [officialBcv, setOfficialBcv] = useState<{rate: number, date: string} | null>(null);
+  const [vesMarkupPercentage, setVesMarkupPercentage] = useState(0);
   const [bcvLoading, setBcvLoading] = useState(true);
   const [loyaltyEarningRate, setLoyaltyEarningRate] = useState(10);
   const [loyaltySpendingRate, setLoyaltySpendingRate] = useState(15);
@@ -132,6 +135,9 @@ export default function POS({ onLogout }: POSProps) {
   useEffect(() => {
     const fetchSettings = async () => {
       try {
+        const { data: vesData } = await supabase.from('settings').select('value').eq('id', 'ves_markup_percentage').single();
+        if (vesData) setVesMarkupPercentage(Number(vesData.value) || 0);
+
         let wpData = null;
         try {
             const res = await supabase.from('settings').select('text_value').eq('id', 'whatsapp_message').single();
@@ -551,10 +557,15 @@ export default function POS({ onLogout }: POSProps) {
   const totalUSD = safeNumber(subtotalUSD - discountAmount + surchargeAmount);
 
   const actualOficialBCV = resolveBcvRate(officialBcv?.rate);
-  const toVes = (usd: number) => usdToVesReference(usd, actualOficialBCV);
+  const markupMultiplier = vesMarkupMultiplier(vesMarkupPercentage);
+  /** Montos Bs. en pantalla / cobro (BCV + recargo admin, ej. 18%). */
+  const toVes = (usd: number) => usdToVes(usd, actualOficialBCV, vesMarkupPercentage);
+  /** Nota de entrega WhatsApp: solo BCV oficial. */
+  const toVesBill = (usd: number) => usdToVesReference(usd, actualOficialBCV);
   const subtotalVES = toVes(safeNumber(subtotalUSD));
   const totalVES = toVes(totalUSD);
-  const vesPerUsdForChange = actualOficialBCV;
+  const totalVESBill = toVesBill(totalUSD);
+  const vesPerUsdForChange = actualOficialBCV * markupMultiplier;
 
   const getPaymentUsdEquivalent = (pmId: string, amount: number) => {
     const pm = paymentMethods.find(p => p.id === pmId);
@@ -563,7 +574,8 @@ export default function POS({ onLogout }: POSProps) {
     const isVes = pm.currency === 'VES' || (pm.name || '').toUpperCase().includes('VES') || (pm.name || '').toUpperCase().includes('PAGO MÓVIL') || (pm.name || '').toUpperCase().includes('PAGOMOVIL') || (pm.name || '').toUpperCase().includes('PUNTO');
 
     if (isVes) {
-      return actualOficialBCV > 0 ? amount / actualOficialBCV : 0;
+      const rate = actualOficialBCV * markupMultiplier;
+      return rate > 0 ? amount / rate : 0;
     }
     return amount;
   };
@@ -629,6 +641,10 @@ export default function POS({ onLogout }: POSProps) {
   const getEffectiveVesRate = (s: any) => {
     const applied = Number(s.exchange_rate_applied);
     const rate = Number.isFinite(applied) && applied > 0 ? applied : actualOficialBCV;
+    const markupPct = Number(vesMarkupPercentage) || 0;
+    if (markupPct > 0 && rate <= actualOficialBCV * 1.05) {
+      return rate * markupMultiplier;
+    }
     return rate;
   };
 
@@ -778,8 +794,14 @@ export default function POS({ onLogout }: POSProps) {
           currencyUsed = 'USDT';
         }
 
-        rateToSave = actualOficialBCV;
-          
+        const paysInVes =
+          currencyUsed === 'VES' ||
+          (selectedPaymentMethod!.name || '').toUpperCase().includes('VES') ||
+          (selectedPaymentMethod!.name || '').toUpperCase().includes('PAGO MÓVIL') ||
+          (selectedPaymentMethod!.name || '').toUpperCase().includes('PAGOMOVIL') ||
+          (selectedPaymentMethod!.name || '').toUpperCase().includes('PUNTO');
+        rateToSave = paysInVes ? actualOficialBCV * markupMultiplier : actualOficialBCV;
+
         paymentMethodName = selectedPaymentMethod!.name;
       }
 
@@ -914,30 +936,30 @@ export default function POS({ onLogout }: POSProps) {
                       <div className="col-span-6 line-clamp-1 truncate pr-2">
                         {item.product.name}{item.product.flavor ? ` (${item.product.flavor})` : ''}{item.isWholesale ? ' · MAYOR' : ''}
                       </div>
-                      <div className="col-span-4 text-right">Bs. {formatBs(toVes(cartLineSubtotalUsd(item, inventory)))}</div>
+                      <div className="col-span-4 text-right">Bs. {formatBs(toVesBill(cartLineSubtotalUsd(item, inventory)))}</div>
                     </div>
                   ))}
                 </div>
                 {loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Puntos:</span>
-                     <span>- Bs. {formatBs(toVes(loyaltyDiscountAmount))}</span>
+                     <span>- Bs. {formatBs(toVesBill(loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {discountAmount - loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Adicional:</span>
-                     <span>- Bs. {formatBs(toVes(discountAmount - loyaltyDiscountAmount))}</span>
+                     <span>- Bs. {formatBs(toVesBill(discountAmount - loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {surchargeAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Recargo Adicional:</span>
-                     <span>+ Bs. {formatBs(toVes(surchargeAmount))}</span>
+                     <span>+ Bs. {formatBs(toVesBill(surchargeAmount))}</span>
                    </div>
                 )}
                 <div className="text-right mt-2 text-base font-bold text-gray-900">
-                  TOTAL A PAGAR: Bs. {formatBs(totalVES)}
+                  TOTAL A PAGAR: Bs. {formatBs(totalVESBill)}
                 </div>
               </div>
 
@@ -1785,6 +1807,11 @@ export default function POS({ onLogout }: POSProps) {
             </div>
             {officialBcv?.date && (
               <div className="text-[10px] opacity-70 mt-1 text-right">Ref. {officialBcv.date}</div>
+            )}
+            {Number(vesMarkupPercentage) > 0 && (
+              <div className="text-[10px] mt-1 opacity-80">
+                Montos en Bs. incluyen +{Number(vesMarkupPercentage)}% (nota WhatsApp: solo BCV).
+              </div>
             )}
           </div>
 
