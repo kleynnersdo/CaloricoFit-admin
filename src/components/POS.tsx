@@ -5,7 +5,9 @@ import { GLOBAL_CONFIG, cn, emptyToNull } from "../lib/utils";
 import {
   fetchOfficialBcv,
   formatBs,
+  formatUsd,
   resolveBcvRate,
+  safeNumber,
   usdToVes,
   vesMarkupMultiplier,
 } from "../lib/bcv";
@@ -482,11 +484,12 @@ export default function POS({ onLogout }: POSProps) {
               loyaltyDiscountAmount = loyaltyRewardValue * timesThreshold;
           }
       } else {
-          loyaltyDiscountAmount = effectivePointsToRedeem / loyaltySpendingRate;
+          const spendRate = Number(loyaltySpendingRate) || 1;
+          loyaltyDiscountAmount = effectivePointsToRedeem / spendRate;
       }
 
       // Validar límite máximo de canje (porcentaje del subtotal)
-      const maxDiscountFromPoints = subtotalUSD * (loyaltyMaxRedemptionPercentage / 100);
+      const maxDiscountFromPoints = subtotalUSD * (Number(loyaltyMaxRedemptionPercentage || 0) / 100);
       if (loyaltyDiscountAmount > maxDiscountFromPoints) {
           loyaltyDiscountAmount = maxDiscountFromPoints;
           // Recalcular puntos efectivos usados si se topa por máximo descuento
@@ -504,13 +507,14 @@ export default function POS({ onLogout }: POSProps) {
     : 0;
   const surchargeAmount = (subtotalUSD - loyaltyDiscountAmount) * surchargePercentage;
 
-  const totalUSD = subtotalUSD - discountAmount + surchargeAmount;
+  const totalUSD = safeNumber(subtotalUSD - discountAmount + surchargeAmount);
 
   const actualOficialBCV = resolveBcvRate(officialBcv?.rate);
   const markupMultiplier = vesMarkupMultiplier(vesMarkupPercentage);
   const toVes = (usd: number) => usdToVes(usd, actualOficialBCV, vesMarkupPercentage);
-  const subtotalVES = toVes(subtotalUSD);
+  const subtotalVES = toVes(safeNumber(subtotalUSD));
   const totalVES = toVes(totalUSD);
+  const vesPerUsdForChange = actualOficialBCV * markupMultiplier;
 
   const getPaymentUsdEquivalent = (pmId: string, amount: number) => {
     const pm = paymentMethods.find(p => p.id === pmId);
@@ -1063,35 +1067,39 @@ export default function POS({ onLogout }: POSProps) {
                          return sum + getPaymentUsdEquivalent(pmId, amount as number);
                        }, 0);
                        const remainingMultiUSD = Math.max(0, totalUSD - totalPaidMultiUSD);
-                       const remainingMultiVES = remainingMultiUSD * markupMultiplier * actualOficialBCV;
+                       const remainingMultiVES = toVes(remainingMultiUSD);
                        const overpaidMultiUSD = Math.max(0, totalPaidMultiUSD - totalUSD);
-                       const overpaidMultiVES = overpaidMultiUSD * markupMultiplier * actualOficialBCV;
+                       const overpaidMultiVES = toVes(overpaidMultiUSD);
 
                        return (
                           <div className="p-3 bg-white rounded-lg border border-gray-200 text-xs space-y-1.5 shadow-sm">
                              <div className="flex justify-between font-medium">
                                 <span className="text-gray-500 font-semibold">Total Venta USD:</span>
-                                <span className="font-bold text-gray-950">${totalUSD.toFixed(2)} USD</span>
+                                <span className="font-bold text-gray-950">${formatUsd(totalUSD)} USD</span>
+                             </div>
+                             <div className="flex justify-between font-medium">
+                                <span className="text-gray-500 font-semibold">Equivalente Bs. (venta):</span>
+                                <span className="font-bold text-purple-700">Bs. {formatBs(totalVES)}</span>
                              </div>
                              <div className="flex justify-between font-medium">
                                 <span className="text-gray-500 font-semibold">Total Recibido USD:</span>
-                                <span className="font-bold text-green-600">${totalPaidMultiUSD.toFixed(2)} USD</span>
+                                <span className="font-bold text-green-600">${formatUsd(totalPaidMultiUSD)} USD</span>
                              </div>
                              <div className="border-t border-gray-100 my-1 pt-1.5 flex justify-between items-center text-sm">
                                 {remainingMultiUSD > 0 ? (
                                    <>
                                       <span className="font-extrabold text-orange-600">Restante por Cobrar:</span>
                                       <div className="text-right font-black text-orange-600">
-                                         <div>${remainingMultiUSD.toFixed(2)} USD</div>
-                                         <div className="text-[10px] text-gray-500">≈ Bs. {remainingMultiVES.toFixed(2)} VES</div>
+                                         <div>${formatUsd(remainingMultiUSD)} USD</div>
+                                         <div className="text-[10px] text-gray-500">≈ Bs. {formatBs(remainingMultiVES)}</div>
                                       </div>
                                    </>
                                 ) : (
                                    <>
                                       <span className="font-extrabold text-green-600">Vuelto a Entregar:</span>
                                       <div className="text-right font-black text-green-600">
-                                         <div>${overpaidMultiUSD.toFixed(2)} USD</div>
-                                         <div className="text-[10px] text-gray-500">≈ Bs. {overpaidMultiVES.toFixed(2)} VES</div>
+                                         <div>${formatUsd(overpaidMultiUSD)} USD</div>
+                                         <div className="text-[10px] text-gray-500">≈ Bs. {formatBs(overpaidMultiVES)}</div>
                                       </div>
                                    </>
                                 )}
@@ -1132,7 +1140,7 @@ export default function POS({ onLogout }: POSProps) {
                        <div className="mt-3 text-right">
                            <div className="text-sm text-gray-500">Monto Final:</div>
                            <div className="text-2xl font-black text-gray-900">
-                              {selectedPaymentMethod.currency === 'VES' ? `Bs. ${Number(totalVES || 0).toFixed(2)}` : `$${Number(totalUSD || 0).toFixed(2)}`}
+                              {selectedPaymentMethod.currency === 'VES' ? `Bs. ${formatBs(totalVES)}` : `$${formatUsd(totalUSD)}`}
                            </div>
                        </div>
                    )}
@@ -1518,7 +1526,7 @@ export default function POS({ onLogout }: POSProps) {
       )}
 
       {/* SECCIÓN IZQUIERDA: Búsqueda y Resultados (70%) */}
-      <div className="flex-1 flex flex-col p-6 overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col p-6 overflow-hidden">
         
         {/* Cabecera / Buscador Ultra Rápido */}
         <div className="mb-6 flex justify-between items-center">
@@ -1663,8 +1671,8 @@ export default function POS({ onLogout }: POSProps) {
         </div>
       </div>
 
-      {/* SECCIÓN DERECHA: Carrito de Compras (30%) */}
-      <div className="w-96 bg-white shadow-[-10px_0_30px_rgba(0,0,0,0.03)] flex flex-col z-10 border-l border-gray-100">
+      {/* SECCIÓN DERECHA: Carrito de Compras (30%) — min-h-0 para que totales/vueltos no queden fuera de pantalla */}
+      <div className="w-96 max-w-[40vw] min-h-0 shrink-0 bg-white shadow-[-10px_0_30px_rgba(0,0,0,0.03)] flex flex-col z-10 border-l border-gray-100">
         
         {/* CRM / Identificación rápida del cliente */}
         <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">
@@ -1700,7 +1708,7 @@ export default function POS({ onLogout }: POSProps) {
         </div>
 
         {/* Lista de Items del carrito */}
-        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 flex flex-col gap-3">
           {cart.map(item => (
             <div key={`${item.product.id}-${item.isWholesale ? 'w' : 'r'}`} className="flex gap-4 p-3 bg-white border border-gray-100 rounded-lg hover:border-orange-200 transition-colors shadow-sm">
               <div className="flex-1">
@@ -1734,18 +1742,19 @@ export default function POS({ onLogout }: POSProps) {
                 </div>
               </div>
               <div className="text-right flex flex-col justify-between">
-                <div className="font-bold whitespace-nowrap text-gray-900">${Number(lineUnitPrice(item) * item.quantity || 0).toFixed(2)}</div>
-                <div className="text-xs text-gray-400 font-medium">u/${Number(lineUnitPrice(item) || 0).toFixed(2)}</div>
+                <div className="font-bold whitespace-nowrap text-gray-900">${formatUsd(Number(lineUnitPrice(item)) * Number(item.quantity))}</div>
+                <div className="text-xs font-bold text-purple-700">Bs. {formatBs(toVes(Number(lineUnitPrice(item)) * Number(item.quantity)))}</div>
+                <div className="text-xs text-gray-400 font-medium">u/${formatUsd(lineUnitPrice(item))}</div>
               </div>
             </div>
           ))}
         </div>
 
-        {/* Totales y Checkout */}
-        <div className="bg-white border-t border-gray-200 p-5 shadow-[0_-10px_20px_rgba(0,0,0,0.02)]">
+        {/* Totales y Checkout — siempre visible (no scroll) */}
+        <div className="shrink-0 bg-white border-t border-gray-200 p-5 shadow-[0_-10px_20px_rgba(0,0,0,0.02)] max-h-[55vh] overflow-y-auto">
           <div className="flex justify-between items-center mb-1">
             <span className="text-gray-500 font-medium text-sm">Subtotal USD</span>
-            <span className="font-bold text-gray-900">${Number(subtotalUSD || 0).toFixed(2)}</span>
+            <span className="font-bold text-gray-900">${formatUsd(subtotalUSD)}</span>
           </div>
           <div className="flex justify-between items-center mb-3">
             <span className="text-purple-700 font-medium text-sm">Subtotal Bs.</span>
@@ -1781,7 +1790,7 @@ export default function POS({ onLogout }: POSProps) {
           <div className="flex justify-between items-end mb-6 gap-4">
             <span className="text-lg font-bold text-gray-900">Total a Pagar</span>
             <div className="text-right">
-              <div className="text-3xl font-black text-orange-500 leading-none">${Number(totalUSD || 0).toFixed(2)}</div>
+              <div className="text-3xl font-black text-orange-500 leading-none">${formatUsd(totalUSD)}</div>
               <div className="text-xl font-black text-purple-700 leading-tight mt-1">Bs. {formatBs(totalVES)}</div>
             </div>
           </div>
@@ -1836,6 +1845,17 @@ export default function POS({ onLogout }: POSProps) {
                    </div>
                 </div>
 
+                <div className="rounded-lg bg-white border border-gray-200 p-2.5 space-y-1 text-xs">
+                  <div className="flex justify-between font-medium text-gray-600">
+                    <span>Total a cobrar (USD)</span>
+                    <span className="font-bold text-gray-900">${formatUsd(totalUSD)}</span>
+                  </div>
+                  <div className="flex justify-between font-medium text-purple-800">
+                    <span>Total a cobrar (Bs.)</span>
+                    <span className="font-bold">Bs. {formatBs(totalVES)}</span>
+                  </div>
+                </div>
+
                 <div>
                    <label className="block text-xs font-bold text-gray-600 mb-1">Monto Recibido ({changeCurrency})</label>
                    <input 
@@ -1849,32 +1869,40 @@ export default function POS({ onLogout }: POSProps) {
                    />
                 </div>
 
-                {Number(receivedAmount) > 0 && (
+                {(() => {
+                  const received = safeNumber(receivedAmount);
+                  const changeVes = Math.max(0, received - totalVES);
+                  const changeUsdFromVesInput = vesPerUsdForChange > 0 ? changeVes / vesPerUsdForChange : 0;
+                  const changeUsd = Math.max(0, received - totalUSD);
+                  const changeVesFromUsdInput = changeUsd * vesPerUsdForChange;
+                  const showChange = received > 0;
+                  return showChange ? (
                   <div className="flex justify-between items-center text-sm pt-1 border-t border-dashed border-gray-200">
                     <span className="font-bold text-gray-700">Vuelto a entregar:</span>
                     <div className="text-right">
                        {changeCurrency === 'VES' ? (
                           <>
-                            <div className={`font-black text-lg ${(Number(receivedAmount) - totalVES) >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                              Bs. {((Number(receivedAmount) - totalVES) >= 0 ? (Number(receivedAmount) - totalVES) : 0).toFixed(2)}
+                            <div className={`font-black text-lg ${received >= totalVES ? 'text-green-600' : 'text-red-500'}`}>
+                              Bs. {formatBs(changeVes)}
                             </div>
                             <div className="text-gray-500 text-xs font-semibold">
-                              $ {((Number(receivedAmount) - totalVES) >= 0 ? (Number(receivedAmount) - totalVES) / actualOficialBCV : 0).toFixed(2)}
+                              ≈ $ {formatUsd(changeUsdFromVesInput)}
                             </div>
                           </>
                        ) : (
                           <>
-                            <div className={`font-black text-lg ${(Number(receivedAmount) - totalUSD) >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                              $ {((Number(receivedAmount) - totalUSD) >= 0 ? (Number(receivedAmount) - totalUSD) : 0).toFixed(2)}
+                            <div className={`font-black text-lg ${received >= totalUSD ? 'text-green-600' : 'text-red-500'}`}>
+                              $ {formatUsd(changeUsd)}
                             </div>
                             <div className="text-gray-500 text-xs font-semibold">
-                              Bs. {((Number(receivedAmount) - totalUSD) >= 0 ? (Number(receivedAmount) - totalUSD) * actualOficialBCV : 0).toFixed(2)}
+                              ≈ Bs. {formatBs(changeVesFromUsdInput)}
                             </div>
                           </>
                        )}
                     </div>
                   </div>
-                )}
+                  ) : null;
+                })()}
               </div>
             )}
           </div>

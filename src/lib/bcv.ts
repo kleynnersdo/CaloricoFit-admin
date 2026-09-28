@@ -43,6 +43,16 @@ export function formatBs(amount: unknown): string {
   return Number.isFinite(n) ? n.toFixed(2) : '0.00';
 }
 
+export function formatUsd(amount: unknown): string {
+  const n = Number(amount);
+  return Number.isFinite(n) ? n.toFixed(2) : '0.00';
+}
+
+export function safeNumber(amount: unknown, fallback = 0): number {
+  const n = Number(amount);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 function localApiBase(): string | null {
   const local =
     String((import.meta as any).env.VITE_LOCAL_MODE || '').toLowerCase() === 'true' ||
