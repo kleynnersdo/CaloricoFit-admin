@@ -28,7 +28,9 @@ source .env
 set +a
 
 : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requerido en .env}"
-: "${VITE_LOCAL_API_URL:?VITE_LOCAL_API_URL requerido en .env}"
+: "${VITE_API_URL:=${VITE_LOCAL_API_URL:-}}"
+: "${VITE_API_URL:?VITE_API_URL o VITE_LOCAL_API_URL requerido en .env}"
+export VITE_LOCAL_API_URL="${VITE_LOCAL_API_URL:-$VITE_API_URL}"
 
 export POSTGRES_PASSWORD
 export DATABASE_URL="${DATABASE_URL:-postgresql://calorico:${POSTGRES_PASSWORD}@127.0.0.1:5432/caloricofit}"

@@ -24,7 +24,9 @@ import {
   vesMarkupMultiplier,
 } from "../lib/bcv";
 import BarcodeScanner from "./BarcodeScanner";
-import { supabase } from "../lib/supabase";
+import { api } from "../lib/apiClient";
+import { checkoutSale } from "../lib/salesApi";
+import { errorMessage } from "../lib/apiError";
 import * as htmlToImage from "html-to-image";
 
 interface POSProps {
@@ -82,18 +84,18 @@ export default function POS({ onLogout }: POSProps) {
 
   const fetchTodaySales = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { user } } = await api.auth.getUser();
         if (!user) return;
         
         // Obtener el último cierre de caja del vendedor
-        const { data: lastClosures } = await supabase
+        const { data: lastClosures } = await api
           .from('cash_closures')
           .select('created_at')
           .eq('seller_id', user.id)
           .order('created_at', { ascending: false })
           .limit(1);
 
-        let query = supabase
+        let query = api
           .from('sales')
           .select('*')
           .eq('status', 'COMPLETED')
@@ -135,17 +137,17 @@ export default function POS({ onLogout }: POSProps) {
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const { data: vesData } = await supabase.from('settings').select('value').eq('id', 'ves_markup_percentage').single();
+        const { data: vesData } = await api.from('settings').select('value').eq('id', 'ves_markup_percentage').single();
         if (vesData) setVesMarkupPercentage(Number(vesData.value) || 0);
 
         let wpData = null;
         try {
-            const res = await supabase.from('settings').select('text_value').eq('id', 'whatsapp_message').single();
+            const res = await api.from('settings').select('text_value').eq('id', 'whatsapp_message').single();
             wpData = res.data;
         } catch(e) {}
         if (wpData && wpData.text_value) setWhatsappMessage(wpData.text_value);
 
-        const { data: loyaltySettings } = await supabase.from('settings').select('*').in('id', [
+        const { data: loyaltySettings } = await api.from('settings').select('*').in('id', [
             'loyalty_earning_rate', 'loyalty_spending_rate', 'loyalty_min_spend', 'loyalty_max_redemption_percentage',
             'loyalty_reward_mode', 'loyalty_reward_threshold', 'loyalty_reward_type', 'loyalty_reward_value'
         ]);
@@ -177,7 +179,7 @@ export default function POS({ onLogout }: POSProps) {
 
     const fetchInventory = async () => {
       try {
-        const { data, error } = await supabase.from('products').select('*').eq('is_active', true);
+        const { data, error } = await api.from('products').select('*').eq('is_active', true);
         if (error) throw error;
         if (data) {
           setInventory(data.map((p: Product) => normalizeProduct(p)));
@@ -189,7 +191,7 @@ export default function POS({ onLogout }: POSProps) {
     };
 
     const fetchPaymentMethods = async () => {
-      const { data } = await supabase.from('payment_methods').select('*').eq('is_active', true);
+      const { data } = await api.from('payment_methods').select('*').eq('is_active', true);
       if (data) {
         const normalized = data.map((pm: PaymentMethod) => ({
           ...pm,
@@ -327,7 +329,7 @@ export default function POS({ onLogout }: POSProps) {
   };
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
+    await api.auth.signOut();
     onLogout();
   };
 
@@ -395,7 +397,7 @@ export default function POS({ onLogout }: POSProps) {
     setIsSearchingCustomer(true);
     const t = setTimeout(async () => {
       try {
-        const { data, error } = await supabase
+        const { data, error } = await api
           .from('customers')
           .select('*')
           .or(`document_id.ilike.%${tokens[0]}%,first_name.ilike.%${tokens[0]}%,last_name.ilike.%${tokens[0]}%`)
@@ -452,7 +454,7 @@ export default function POS({ onLogout }: POSProps) {
 
     setIsSavingCustomer(true);
     try {
-      const { data: existing, error: existingError } = await supabase
+      const { data: existing, error: existingError } = await api
         .from('customers')
         .select('*')
         .eq('document_id', documentId)
@@ -467,7 +469,7 @@ export default function POS({ onLogout }: POSProps) {
         return;
       }
 
-      const { data, error } = await supabase
+      const { data, error } = await api
         .from('customers')
         .insert([{
           document_id: documentId,
@@ -485,7 +487,7 @@ export default function POS({ onLogout }: POSProps) {
           || String(error.message || '').toLowerCase().includes('duplicate')
           || error.code === '23505';
         if (isDuplicate) {
-          const { data: dup } = await supabase
+          const { data: dup } = await api
             .from('customers')
             .select('*')
             .eq('document_id', documentId)
@@ -751,10 +753,6 @@ export default function POS({ onLogout }: POSProps) {
 
     setIsProcessing(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-
-      const totalCostUSD = cart.reduce((sum, item) => sum + (item.product.cost_price * item.quantity), 0);
-      
       let pointsEarned = 0;
       let currencyUsed = 'MIXTO';
       let rateToSave = actualOficialBCV;
@@ -805,70 +803,41 @@ export default function POS({ onLogout }: POSProps) {
         paymentMethodName = selectedPaymentMethod!.name;
       }
 
-      let sale: any = null;
-      let saleError: any = null;
-
       const pointsToSubtract = (!isMultiCurrency && selectedPaymentMethod && selectedPaymentMethod.currency === 'POINTS') ? pointsRequired : effectivePointsToRedeem;
 
       const salePayload = {
-        seller_id: user?.id,
         customer_id: customer.id,
         subtotal_usd: subtotalUSD,
         discount_usd: discountAmount,
         surcharge_usd: surchargeAmount,
         total_usd: totalUSD,
-        cost_usd: totalCostUSD,
         payment_method: paymentMethodName,
         currency_used: currencyUsed,
         exchange_rate_applied: rateToSave,
         points_earned: pointsEarned,
         points_redeemed: pointsToSubtract || 0,
         is_wholesale: cartHasWholesale,
-        status: 'COMPLETED',
       };
 
-      const res = await supabase.from('sales').insert([salePayload]).select().single();
-      sale = res.data;
-      saleError = res.error;
-
-      if (saleError) {
-        const fallbackPayload = { ...salePayload };
-        delete (fallbackPayload as any).surcharge_usd;
-        delete (fallbackPayload as any).is_wholesale;
-        const res2 = await supabase.from('sales').insert([fallbackPayload]).select().single();
-        sale = res2.data;
-        saleError = res2.error;
-      }
-
-      if (saleError) throw saleError;
-
-      // Snapshot de precio/costo al momento de la venta (no se altera si cambia el producto después)
-      const saleItems = cart.map((item) => {
-          const unit = lineUnitPrice(item, inventory);
-          const qty = cartLineQty(item);
-          return {
-            sale_id: sale.id,
-            product_id: item.product.id,
-            quantity: qty,
-            unit_price_usd: unit,
-            unit_cost_usd: normalizeProduct(item.product).cost_price,
-            subtotal_usd: cartLineSubtotalUsd(item, inventory),
-          };
+      const checkoutItems = cart.map((item) => {
+        const unit = lineUnitPrice(item, inventory);
+        const qty = cartLineQty(item);
+        return {
+          product_id: item.product.id,
+          quantity: qty,
+          unit_price_usd: unit,
+          subtotal_usd: cartLineSubtotalUsd(item, inventory),
+        };
       });
 
-      const { error: itemsError } = await supabase.from('sale_items').insert(saleItems);
-      if (itemsError) throw itemsError;
+      const { data: sale, error: saleError } = await checkoutSale({
+        sale: salePayload,
+        items: checkoutItems,
+      });
 
-      // Restar inventario local y remoto
-      for (const item of cart) {
-        const { error: rpcError } = await supabase.rpc('subtract_inventory_on_sale', { qty: item.quantity, pid: item.product.id });
-        if (rpcError) {
-          await supabase.from('products').update({ stock_quantity: item.product.stock_quantity - item.quantity }).eq('id', item.product.id);
-        }
+      if (saleError || !sale) {
+        throw new Error(saleError?.message || 'No se pudo registrar la venta');
       }
-      
-      const newLoyaltyPoints = (customer.loyalty_points || 0) + pointsEarned - pointsToSubtract;
-      await supabase.from('customers').update({ loyalty_points: newLoyaltyPoints }).eq('id', customer.id);
 
       showToast(cartHasWholesale ? "Venta al mayor procesada." : "Venta procesada exitosamente.");
       setCart([]);
@@ -881,13 +850,13 @@ export default function POS({ onLogout }: POSProps) {
       setIsCheckoutModalOpen(false);
       
       // Refrescar inventario y ventas del día
-      const { data: newInv } = await supabase.from('products').select('*').eq('is_active', true);
+      const { data: newInv } = await api.from('products').select('*').eq('is_active', true);
       if (newInv) setInventory(newInv.map((p: Product) => normalizeProduct(p)));
       fetchTodaySales();
       
     } catch (err: any) {
       console.error("Error completo", err);
-      showToast("Error crítico al cobrar: " + err.message);
+      showToast("Error crítico al cobrar: " + errorMessage(err));
     } finally {
       setIsProcessing(false);
     }
@@ -1334,7 +1303,7 @@ export default function POS({ onLogout }: POSProps) {
                            const ves = Number(form.ves.value);
 
                            try {
-                               const { data: { user } } = await supabase.auth.getUser();
+                               const { data: { user } } = await api.auth.getUser();
                                if (!user) throw new Error("No user found");
                                 const systemUSD = getSystemUSD(todaySales);
                                 const systemUSDT = getSystemUSDT(todaySales);
@@ -1343,7 +1312,7 @@ export default function POS({ onLogout }: POSProps) {
                                 const salesIds = todaySales.map(s => s.id);
                                 let salesDataPayload: any[] = [];
                                 if (salesIds.length > 0) {
-                                  const { data: items } = await supabase
+                                  const { data: items } = await api
                                     .from('sale_items')
                                     .select('sale_id, product_id, quantity, unit_price_usd, subtotal_usd, products(name, sku, category, subcategory)')
                                     .in('sale_id', salesIds);
@@ -1369,7 +1338,7 @@ export default function POS({ onLogout }: POSProps) {
                                   });
                                 }
 
-                                let { error } = await supabase.from('cash_closures').insert([{
+                                let { error } = await api.from('cash_closures').insert([{
                                     seller_id: user.id,
                                     declared_usd: usd,
                                     declared_usdt: usdt,
@@ -1383,7 +1352,7 @@ export default function POS({ onLogout }: POSProps) {
 
                                 if (error) {
                                     console.warn("Fallo al insertar cierre extendido, ejecutando inserción básica:", error);
-                                    const { error: fallbackError } = await supabase.from('cash_closures').insert([{
+                                    const { error: fallbackError } = await api.from('cash_closures').insert([{
                                         seller_id: user.id,
                                         declared_usd: usd,
                                         declared_usdt: usdt,

@@ -1,37 +1,25 @@
 const STORAGE_KEY = 'calorico.local.session';
 
-type LocalSession = {
-  access_token: string;
-  token_type: string;
-  user: {
-    id: string;
-    email?: string;
-    user_metadata?: Record<string, unknown>;
-  };
-};
+const listeners = new Set<(event: string, session: AppSession | null) => void>();
 
-const listeners = new Set<(event: string, session: LocalSession | null) => void>();
-
-function readSession(): LocalSession | null {
+function readSession(): AppSession | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as LocalSession) : null;
+    return raw ? (JSON.parse(raw) as AppSession) : null;
   } catch {
     return null;
   }
 }
 
-function writeSession(session: LocalSession | null) {
+function writeSession(session: AppSession | null) {
   if (session) localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
   else localStorage.removeItem(STORAGE_KEY);
   listeners.forEach((cb) => cb(session ? 'SIGNED_IN' : 'SIGNED_OUT', session));
 }
 
-function apiBase() {
-  return (import.meta as any).env.VITE_LOCAL_API_URL || 'http://localhost:3032';
-}
+import { getApiBase, type AppSession } from './apiEnv';
 
-function authHeaders(extra?: Record<string, string>): Record<string, string> {
+export function authHeaders(extra?: Record<string, string>): Record<string, string> {
   const session = readSession();
   const headers: Record<string, string> = { 'Content-Type': 'application/json', ...extra };
   if (session?.access_token) {
@@ -154,12 +142,12 @@ class LocalQuery {
     return this;
   }
 
-  then(resolve: any, reject?: any) {
-    return this.execute().then(resolve, reject);
+  run() {
+    return this.execute();
   }
 
-  private async execute() {
-    const res = await fetch(`${apiBase()}/db`, {
+  async execute() {
+    const res = await fetch(`${getApiBase()}/db`, {
       method: 'POST',
       headers: authHeaders(),
       body: JSON.stringify({
@@ -195,24 +183,39 @@ class LocalQuery {
   }
 }
 
+export type DbResult = { data: any; error: { message: string; code?: string } | null };
+
+/** Builder encadenable que se puede `await` sin thenable custom (TS 5.8). */
+function awaitableQuery(q: LocalQuery): LocalQuery & Promise<DbResult> {
+  return new Proxy(q, {
+    get(target, prop) {
+      if (prop === 'then') {
+        return (onF: (v: DbResult) => unknown, onR?: (e: unknown) => unknown) =>
+          target.execute().then(onF, onR);
+      }
+      if (prop === 'catch') {
+        return (onR: (e: unknown) => unknown) => target.execute().catch(onR);
+      }
+      if (prop === 'finally') {
+        return (onF: () => void) => target.execute().finally(onF);
+      }
+      const val = Reflect.get(target, prop, target);
+      if (typeof val === 'function') {
+        return (...args: unknown[]) => awaitableQuery(val.apply(target, args));
+      }
+      return val;
+    },
+  }) as LocalQuery & Promise<DbResult>;
+}
+
 export function createLocalClient() {
   return {
     from(table: string) {
-      return new LocalQuery(table);
-    },
-    rpc(name: string, _args?: Record<string, unknown>) {
-      return fetch(`${apiBase()}/rpc/${name}`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: JSON.stringify(_args || {}),
-      }).then(async (res) => {
-        const json = await res.json();
-        return json;
-      });
+      return awaitableQuery(new LocalQuery(table));
     },
     auth: {
       async signInWithPassword({ email, password }: { email: string; password: string }) {
-        const res = await fetch(`${apiBase()}/auth/login`, {
+        const res = await fetch(`${getApiBase()}/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ identifier: email, password }),
@@ -234,7 +237,7 @@ export function createLocalClient() {
         options?: { data?: Record<string, unknown> };
       }) {
         const meta = options?.data || {};
-        const res = await fetch(`${apiBase()}/auth/signup`, {
+        const res = await fetch(`${getApiBase()}/auth/signup`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -257,7 +260,7 @@ export function createLocalClient() {
         const session = readSession();
         if (session?.access_token) {
           try {
-            await fetch(`${apiBase()}/auth/logout`, {
+            await fetch(`${getApiBase()}/auth/logout`, {
               method: 'POST',
               headers: authHeaders(),
             });
@@ -275,9 +278,9 @@ export function createLocalClient() {
         const session = readSession();
         return { data: { user: session?.user || null }, error: null };
       },
-      onAuthStateChange(callback: (event: string, session: LocalSession | null) => void) {
+      onAuthStateChange(callback: (event: string, session: AppSession | null) => void) {
         listeners.add(callback);
-        // Emit current session once (like supabase)
+        // Emit current session once on subscribe
         queueMicrotask(() => callback(readSession() ? 'INITIAL_SESSION' : 'SIGNED_OUT', readSession()));
         return {
           data: {
@@ -290,3 +293,5 @@ export function createLocalClient() {
     },
   };
 }
+
+export const api = createLocalClient();

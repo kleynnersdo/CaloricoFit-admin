@@ -1,150 +1,70 @@
 # Calórico Fit Admin — Documentación del proyecto
 
-> Análisis del código en `CaloricoFit-admin` · Fecha: 2026-08-10  
-> Rama de trabajo: `ender` · Staging VPS: `staging` · Producción: `main`
+> Actualizado: 2026-09 · Rama: `ender`
 
----
+## Qué es
 
-## 1. Qué es
+**Calórico Fit POS / Admin** — SPA de punto de venta y panel administrativo (retail fitness, Venezuela).
 
-**Calórico Fit POS / Admin** — SPA de **punto de venta** y **panel administrativo** para venta de suplementos y equipos de gimnasio (retail fitness, Venezuela).
-
-**Permite:**
-- Cobrar en tienda (USD, USDT, VES, Zelle, puntos, pagos mixtos)
-- Inventario, clientes, vendedores, gastos recurrentes
-- Tasa BCV + markup VES, fidelidad, cierre de caja, métricas y export Excel
-
----
-
-## 2. Stack
+## Stack
 
 | Capa | Tecnología |
 |------|------------|
-| UI | React 19 + TypeScript |
-| Build | Vite 6 |
-| Estilos | Tailwind CSS 4 |
-| Backend | Supabase (Auth + Postgres + RLS) |
-| Extra | date-fns, xlsx, html5-qrcode, html-to-image |
+| UI | React 19 + TypeScript + Vite 6 + Tailwind 4 |
+| API | Express (`server/local-api.mjs`), puerto 3032 |
+| BD | PostgreSQL (`db/smoke/` en dev, Docker prod en VPS) |
+| Cliente | `src/lib/apiClient.ts` — auth + CRUD vía `/db` y endpoints transaccionales |
 
-No hay backend propio en runtime. Cliente → Supabase directo.
-
-**Dev local:** `http://localhost:3020` (`npm run dev`)
-
----
-
-## 3. Arquitectura
+## Arquitectura
 
 ```
-SPA (React)  →  @supabase/supabase-js  →  Postgres + Auth (Supabase)
+React (POS / Admin)  →  apiClient  →  local-api.mjs  →  Postgres
 ```
 
-Sin React Router: el rol (`admin` | `seller`) decide la pantalla.
+Sin Supabase en runtime. DDL legado Supabase en `docs/archive/supabase_schema.sql` (solo referencia).
 
-```
-src/
-├── App.tsx                 # Auth gate + routing por rol
-├── components/
-│   ├── Login.tsx
-│   ├── POS.tsx             # Vendedor
-│   ├── AdminDashboard.tsx  # Admin
-│   └── BarcodeScanner.tsx
-└── lib/supabase.ts
-supabase_schema.sql         # DDL + RLS + triggers
-```
+## Auth
 
----
+- Login: `POST /auth/login` (cédula o email + password).
+- Sesión: token en `localStorage`, `Authorization: Bearer` en requests.
+- Roles en `worker_profiles`: `admin` | `seller`.
 
-## 4. Flujo principal
+## Endpoints clave
 
-1. Login (cédula→email virtual `{cedula}@caloricofit.com` o email) vía Supabase Auth
-2. Lee `worker_profiles` → `admin` → AdminDashboard / `seller` → POS
-3. POS: carrito → `sales` + `sale_items` → stock + puntos fidelidad → ticket / WhatsApp
-4. Admin: métricas, inventario, gastos, vendedores, clientes, settings
+| Método | Ruta | Uso |
+|--------|------|-----|
+| POST | `/auth/login` | Login |
+| POST | `/db` | CRUD genérico (ventas insert bloqueado) |
+| POST | `/sales/checkout` | Cobro transaccional |
+| POST | `/sales/:id/void` | Anulación (admin) |
+| POST | `/admin/purge` | Borrado histórico auditado |
+| GET | `/public/bcv/oficial` | Tasa BCV proxy |
 
----
-
-## 5. Configuración / env
+## Configuración
 
 | Variable | Uso |
 |----------|-----|
-| `VITE_SUPABASE_URL` | Proyecto Supabase |
-| `VITE_SUPABASE_ANON_KEY` | Anon key |
-| `GEMINI_API_KEY` / `APP_URL` | Legado AI Studio; no usadas en `src/` |
+| `VITE_API_URL` | URL base API para el frontend |
+| `DATABASE_URL` | Postgres para la API |
+| `LOCAL_API_PORT` | Puerto API (default 3032) |
 
-Sin credenciales válidas usa mock (`src/lib/supabase.ts`) y Login avisa.
-
----
-
-## 6. Seguridad — nivel: **medio-bajo**
-
-**Bien:** Auth Supabase, RLS en tablas, helpers `is_admin`/`is_seller`, anon key (no service_role), soft-disable vendedores.
-
-**Gaps críticos:**
-- Posible **doble resta** de stock/puntos (trigger BD + lógica cliente)
-- Sellers ven `cost_price` (`SELECT *`)
-- RLS customers muy permisivo para sellers
-- Alta de usuarios con `signUp` desde el browser
-- Borrado masivo de ventas/cierres desde UI
-- Schema drift (`text_value` vs `string_value`, columnas faltantes)
-
----
-
-## 7. Listo para producción — **no aún (~40–50%)**
-
-| Área | Estado |
-|------|--------|
-| Features de negocio | Avanzadas (POS + admin usables) |
-| Auth / roles UI | Funcional |
-| RLS / seguridad dura | Incompleta |
-| Env / secrets | Parcial (falta `.env` real en host) |
-| Schema sincronizado | Drift |
-| CI/CD | No |
-| Tests | No |
-| Monitoring | No |
-| HTTPS / dominio | Depende del host |
-| Backups | Solo lo que dé el plan Supabase |
-
-### Checklist mínimo antes de prod
-- [ ] Aplicar schema + migraciones alineadas con la app
-- [ ] Eliminar duplicación stock/puntos (trigger **o** cliente)
-- [ ] Endurecer RLS; ocultar costos a sellers
-- [ ] Crear usuarios vía Admin API / Edge Function (no `signUp` browser)
-- [ ] Hosting + HTTPS + `.env` de prod
-- [ ] Quitar `patch_*.cjs` del flujo de deploy
-- [ ] CI básico + smoke tests
-- [ ] Política de backups y no-wipe destructivo sin auditoría
-
----
-
-## 8. Riesgos conocidos
-
-- Scripts `patch_*.cjs` reescriben TSX (deuda; no re-ejecutar a ciegas)
-- Componentes monolíticos (`POS`, `AdminDashboard`) difíciles de mantener
-- Deps muertas (`@google/genai`, `express`)
-- API BCV de terceros (disponibilidad/CORS)
-- npm name aún `react-example`
-
----
-
-## 9. Flujo de ramas
-
-| Rama | Uso |
-|------|-----|
-| `ender` | Desarrollo diario |
-| `staging` | Pruebas en VPS |
-| `main` | Producción |
-
-Flujo: `ender` → merge a `staging` (VPS) → merge a `main` (prod).
-
----
-
-## 10. Arranque local
+## Arranque local
 
 ```bash
-cp .env.example .env   # o editar .env existente
-# Rellenar VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY
+cp .env.example .env
 npm install
-npm run dev            # http://localhost:3020
+npm run db:up
+npm run dev:local
 ```
 
-Aplicar `supabase_schema.sql` en el proyecto Supabase si la BD está vacía.
+Abrir http://localhost:3020 — ver `docs/LOCAL.md` y `docs/LOCAL_DB.md`.
+
+## Seguridad
+
+- Vendedores no reciben `cost_price` en selects de productos (API).
+- Passwords bcrypt (`db/smoke/04_security.sql`).
+- `audit_log` en operaciones críticas (checkout, void, purge).
+
+## Deploy
+
+Ver `docs/DEPLOY.md` — VPS Hostkey, pm2 `caloricofit-api`, nginx.

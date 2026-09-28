@@ -58,12 +58,9 @@ export function safeNumber(amount: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
-function localApiBase(): string | null {
-  const local =
-    String((import.meta as any).env.VITE_LOCAL_MODE || '').toLowerCase() === 'true' ||
-    String((import.meta as any).env.VITE_LOCAL_MODE || '') === '1';
-  if (!local) return null;
-  return String((import.meta as any).env.VITE_LOCAL_API_URL || 'http://localhost:3032').replace(/\/$/, '');
+function localApiBase(): string {
+  const env = import.meta.env as Record<string, string | undefined>;
+  return String(env.VITE_API_URL || env.VITE_LOCAL_API_URL || 'http://localhost:3032').replace(/\/$/, '');
 }
 
 function bcvProxyUrls(): string[] {
@@ -71,8 +68,7 @@ function bcvProxyUrls(): string[] {
   if (typeof window !== 'undefined' && window.location?.origin) {
     urls.push(`${window.location.origin}/api/public/bcv/oficial`);
   }
-  const apiBase = localApiBase();
-  if (apiBase) urls.push(`${apiBase}/public/bcv/oficial`);
+  urls.push(`${localApiBase()}/public/bcv/oficial`);
   return [...new Set(urls)];
 }
 

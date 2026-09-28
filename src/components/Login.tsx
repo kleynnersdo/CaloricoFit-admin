@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import { api } from '../lib/apiClient';
 
 interface LoginProps {
   onLogin: () => void;
@@ -25,7 +25,7 @@ export default function Login({ onLogin }: LoginProps) {
     const email = getVirtualEmail(documentId);
 
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await api.auth.signInWithPassword({
         email,
         password,
       });

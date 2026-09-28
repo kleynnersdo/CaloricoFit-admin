@@ -11,6 +11,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "smoke:sales": "node scripts/smoke-sales.mjs",
     "db:up": "docker compose -f docker-compose.smoke.yml up -d",
     "db:down": "docker compose -f docker-compose.smoke.yml down",
     "db:reset": "docker compose -f docker-compose.smoke.yml down -v && docker compose -f docker-compose.smoke.yml up -d",
@@ -23,7 +24,6 @@
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
-    "@supabase/supabase-js": "^2.106.2",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
     "clsx": "^2.1.1",

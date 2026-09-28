@@ -13,7 +13,7 @@ npm run dev:local
   o cédula `V00000000` / `Calorico123*2026`  
   vendedor: `vendedor@caloricofit.com` / `Calorico123*2026`
 
-`.env` debe tener `VITE_LOCAL_MODE=true` y `VITE_LOCAL_API_URL=http://localhost:3032`.
+`.env` debe tener `VITE_API_URL=http://localhost:3032` (o `VITE_LOCAL_API_URL` equivalente).
 
 ### Migración de features (DB ya existente)
 

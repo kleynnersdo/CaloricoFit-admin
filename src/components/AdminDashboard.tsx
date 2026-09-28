@@ -1,5 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { api } from '../lib/apiClient';
+import { purgeEntity, voidSale } from '../lib/salesApi';
+import { errorMessage } from '../lib/apiError';
+import { fetchProductNameMap, fetchWorkerMap, withWorkerProfile } from '../lib/metricsHelpers';
 import { LogOut, Users, Package, BarChart3, Settings, Plus, Edit, Trash2, Calendar, FileText, Bell, CheckCircle, X, Download, HelpCircle, Eye, EyeOff, Printer, AlertTriangle, Ban } from 'lucide-react';
 import { emptyToNull, GLOBAL_CONFIG } from '../lib/utils';
 import { fetchOfficialBcv, formatBs, resolveBcvRate } from '../lib/bcv';
@@ -29,7 +32,7 @@ export default function AdminDashboard({ onLogout }: Props) {
       setIsInventoryCostModalOpen(true);
       setInventoryCostData({ totalCost: 0, totalUnits: 0, isCalculating: true });
       
-      const { data, error } = await supabase.from('products').select('cost_price, stock_quantity');
+      const { data, error } = await api.from('products').select('cost_price, stock_quantity');
       if (error) {
           showToast("Error al calcular inventario");
           setInventoryCostData({ totalCost: 0, totalUnits: 0, isCalculating: false });
@@ -133,7 +136,7 @@ export default function AdminDashboard({ onLogout }: Props) {
     }
 
     try {
-      const { data: prevClosures } = await supabase
+      const { data: prevClosures } = await api
         .from('cash_closures')
         .select('created_at')
         .eq('seller_id', c.seller_id)
@@ -141,7 +144,7 @@ export default function AdminDashboard({ onLogout }: Props) {
         .order('created_at', { ascending: false })
         .limit(1);
 
-      let query = supabase
+      let query = api
         .from('sales')
         .select('id, created_at, payment_method, currency_used, total_usd')
         .eq('seller_id', c.seller_id)
@@ -159,13 +162,18 @@ export default function AdminDashboard({ onLogout }: Props) {
       const { data: sales, error: salesErr } = await query;
       if (salesErr || !sales || sales.length === 0) return;
 
-      const saleIds = sales.map(s => s.id);
-      const { data: items } = await supabase
+      const saleIds = sales.map((s) => s.id);
+      const { data: items, error: itemsErr } = await api
         .from('sale_items')
-        .select('sale_id, product_id, quantity, unit_price_usd, subtotal_usd, products(name, sku, category, subcategory)')
+        .select('sale_id, product_id, quantity, unit_price_usd, subtotal_usd')
         .in('sale_id', saleIds);
+      if (itemsErr) {
+        showToast('Error al cargar items del cierre: ' + errorMessage(itemsErr));
+        return;
+      }
+      const productMap = await fetchProductNameMap((items || []).map((i: any) => i.product_id));
 
-      const constructedSalesData = sales.map(sale => {
+      const constructedSalesData = sales.map((sale) => {
         const saleItems = (items || []).filter((i: any) => i.sale_id === sale.id);
         return {
           id: sale.id,
@@ -173,15 +181,18 @@ export default function AdminDashboard({ onLogout }: Props) {
           payment_method: sale.payment_method,
           currency_used: sale.currency_used,
           subtotal_usd: sale.total_usd,
-          items: saleItems.map((i: any) => ({
-            product_name: i.products?.name || 'Producto',
-            product_sku: i.products?.sku || '',
-            category: i.products?.category || '',
-            subcategory: i.products?.subcategory || '',
-            quantity: i.quantity,
-            unit_price_usd: i.unit_price_usd,
-            subtotal_usd: i.subtotal_usd
-          }))
+          items: saleItems.map((i: any) => {
+            const p = productMap[i.product_id];
+            return {
+              product_name: p?.name || 'Producto',
+              product_sku: p?.sku || '',
+              category: p?.category || '',
+              subcategory: p?.subcategory || '',
+              quantity: i.quantity,
+              unit_price_usd: i.unit_price_usd,
+              subtotal_usd: i.subtotal_usd,
+            };
+          }),
         };
       });
 
@@ -220,18 +231,13 @@ export default function AdminDashboard({ onLogout }: Props) {
         startDate = new Date(now.getFullYear(), now.getMonth() - 6, 1);
       } // 'ALL' leaves startDate as null
 
-      let query = supabase.from('cash_closures').delete();
+      const { data, error } = await purgeEntity(
+        'cash_closures',
+        startDate ? startDate.toISOString() : null
+      );
+      if (error) throw new Error(error.message);
 
-      if (startDate) {
-        query = query.gte('created_at', startDate.toISOString());
-      } else {
-        query = query.neq('id', '00000000-0000-0000-0000-000000000000');
-      }
-
-      const { data, error } = await query.select();
-      if (error) throw error;
-
-      const deletedCount = data ? data.length : 0;
+      const deletedCount = data?.deleted ?? 0;
       showToast(`Se eliminaron ${deletedCount} cierres de caja de la base de datos.`);
       setIsClearClosuresModalOpen(false);
       calculateMetrics();
@@ -268,18 +274,10 @@ export default function AdminDashboard({ onLogout }: Props) {
         startDate = new Date(now.getFullYear(), now.getMonth() - 6, 1);
       } // 'ALL' leaves startDate as null
 
-      let query = supabase.from('sales').delete();
+      const { data, error } = await purgeEntity('sales', startDate ? startDate.toISOString() : null);
+      if (error) throw new Error(error.message);
 
-      if (startDate) {
-        query = query.gte('created_at', startDate.toISOString());
-      } else {
-        query = query.neq('id', '00000000-0000-0000-0000-000000000000');
-      }
-
-      const { data, error } = await query.select();
-      if (error) throw error;
-
-      const deletedCount = data ? data.length : 0;
+      const deletedCount = data?.deleted ?? 0;
       showToast(`Se eliminaron ${deletedCount} ventas de la base de datos exitosamente.`);
       setIsClearSalesModalOpen(false);
       calculateMetrics();
@@ -571,25 +569,25 @@ export default function AdminDashboard({ onLogout }: Props) {
   }, [activeTab, metricFilter]);
 
   const fetchPaymentMethods = async () => {
-    const { data } = await supabase.from('payment_methods').select('*').order('created_at', { ascending: true });
+    const { data } = await api.from('payment_methods').select('*').order('created_at', { ascending: true });
     if (data) setPaymentMethods(data);
   };
 
   const fetchSettings = async () => {
     // Fetch stored markup percentage
-    const { data: vesData } = await supabase.from('settings').select('value').eq('id', 'ves_markup_percentage').single();
+    const { data: vesData } = await api.from('settings').select('value').eq('id', 'ves_markup_percentage').single();
     if (vesData) setVesMarkupPercentage(Number(vesData.value) || 0);
 
     // Fetch whatsapp message (ignoring error if column does not exist yet)
     let wpData = null;
     try {
-        const res = await supabase.from('settings').select('text_value').eq('id', 'whatsapp_message').single();
+        const res = await api.from('settings').select('text_value').eq('id', 'whatsapp_message').single();
         wpData = res.data;
     } catch(e) {}
     if (wpData && wpData.text_value) setWhatsappMessage(wpData.text_value);
 
     // Fetch loyalty settings
-    const { data: loyaltySettings } = await supabase.from('settings').select('*').in('id', [
+    const { data: loyaltySettings } = await api.from('settings').select('*').in('id', [
         'loyalty_earning_rate', 'loyalty_spending_rate', 'loyalty_min_spend', 'loyalty_max_redemption_percentage',
         'loyalty_reward_mode', 'loyalty_reward_threshold', 'loyalty_reward_type', 'loyalty_reward_value'
     ]);
@@ -630,25 +628,25 @@ export default function AdminDashboard({ onLogout }: Props) {
         { id: 'loyalty_reward_value', value: loyaltyRewardValue, updated_at: timestamp }
     ];
 
-    const { error } = await supabase.from('settings').upsert(settingsToUpsert);
+    const { error } = await api.from('settings').upsert(settingsToUpsert);
     if (error) showToast("Error al actualizar configuración: " + error.message);
     else showToast("Configuración actualizada exitosamente.");
   };
 
   const fetchProducts = async () => {
-    const { data } = await supabase.from('products').select('*').eq('is_active', true).order('created_at', { ascending: false });
+    const { data } = await api.from('products').select('*').eq('is_active', true).order('created_at', { ascending: false });
     if (data) setProducts(data);
-    const { data: catData } = await supabase.from('product_categories').select('*').order('name');
+    const { data: catData } = await api.from('product_categories').select('*').order('name');
     if (catData) setProductCategories(catData);
   };
 
   const fetchWorkers = async () => {
-    const { data } = await supabase.from('worker_profiles').select('*');
+    const { data } = await api.from('worker_profiles').select('*');
     if (data) setWorkers(data);
   };
 
   const fetchCustomers = async () => {
-    const { data } = await supabase.from('customers').select('*');
+    const { data } = await api.from('customers').select('*');
     if (data) setCustomers(data);
   };
 
@@ -672,14 +670,14 @@ export default function AdminDashboard({ onLogout }: Props) {
   };
 
   const fetchAlerts = async () => {
-    const { data } = await supabase.from('recurring_expenses').select('*').eq('is_active', true);
+    const { data } = await api.from('recurring_expenses').select('*').eq('is_active', true);
     if (data) {
       const today = startOfDay(new Date());
       const expiredOnce = data.filter((exp: any) =>
         exp.frequency === 'once' && differenceInDays(startOfDay(new Date(exp.next_due_date)), today) < 0
       );
       for (const exp of expiredOnce) {
-        await supabase.from('recurring_expenses').update({ is_active: false }).eq('id', exp.id);
+        await api.from('recurring_expenses').update({ is_active: false }).eq('id', exp.id);
       }
       const visible = data.filter((exp: any) => !expiredOnce.some((e: any) => e.id === exp.id));
       const dueSoon = visible.filter((exp: any) => differenceInDays(new Date(exp.next_due_date), new Date()) <= 10);
@@ -688,7 +686,7 @@ export default function AdminDashboard({ onLogout }: Props) {
   };
 
   const fetchRecurringExpensesAll = async () => {
-    const { data } = await supabase.from('recurring_expenses').select('*');
+    const { data } = await api.from('recurring_expenses').select('*');
     if (data) setAllExpensesList(data);
   }
 
@@ -696,7 +694,7 @@ export default function AdminDashboard({ onLogout }: Props) {
 
   useEffect(() => {
     if (activeTab === 'expenses') {
-       supabase.from('recurring_expenses').select('*').then(({data}) => {
+       api.from('recurring_expenses').select('*').then(({data}) => {
          if (data) setAllExpensesList(data);
        });
     }
@@ -706,84 +704,112 @@ export default function AdminDashboard({ onLogout }: Props) {
     let startDate = startOfDay(new Date());
     if (metricFilter === 'week') startDate = startOfWeek(new Date());
     if (metricFilter === 'month') startDate = startOfMonth(new Date());
+    const startIso = startDate.toISOString();
+    const expenseFrom = format(startDate, 'yyyy-MM-dd');
 
-    const { data: salesData } = await supabase
+    const { data: salesRaw, error: salesErr } = await api
       .from('sales')
-      .select('id, total_usd, cost_usd, created_at, payment_method, seller_id, customer_id, points_earned, points_redeemed, status, is_wholesale, worker_profiles(first_name, last_name)')
-      .gte('created_at', startDate.toISOString())
+      .select(
+        'id, total_usd, cost_usd, created_at, payment_method, seller_id, customer_id, points_earned, points_redeemed, status, is_wholesale'
+      )
+      .gte('created_at', startIso)
       .order('created_at', { ascending: false });
 
-    const { data: itemsData } = await supabase
-      .from('sale_items')
-      .select('quantity, product_id, products(name)')
-      .gte('created_at', startDate.toISOString());
+    if (salesErr) {
+      showToast('Error al cargar ventas: ' + errorMessage(salesErr));
+      return;
+    }
 
-    const { data: closuresData } = await supabase
-      .from('cash_closures')
-      .select('*, worker_profiles(first_name, last_name)')
-      .gte('created_at', startDate.toISOString())
-      .order('created_at', { ascending: false });
-      
-    if (closuresData) setCashClosures(closuresData);
-
-    const { data: expensesData } = await supabase
-      .from('expenses')
-      .select('amount_usd')
-      .gte('expense_date', startDate.toISOString());
+    const completedSales = (salesRaw || []).filter((s: any) => !s.status || s.status === 'COMPLETED');
+    const sellerMap = await fetchWorkerMap(completedSales.map((s: any) => s.seller_id));
+    const salesWithSellers = completedSales.map((s: any) => withWorkerProfile(s, sellerMap));
+    setSalesList(salesWithSellers);
 
     let totalSales = 0;
     let totalCost = 0;
-    if (salesData) {
-      salesData.forEach((s: any) => {
-        if (s.status && s.status !== 'COMPLETED') return;
-        totalSales += Number(s.total_usd || 0);
-        totalCost += Number(s.cost_usd || 0);
-      });
-      setSalesList(salesData);
-    }
-    
-    // Calculate top products
-    if (itemsData) {
-        const productCounts: Record<string, {name: string, qty: number}> = {};
+    completedSales.forEach((s: any) => {
+      totalSales += Number(s.total_usd || 0);
+      totalCost += Number(s.cost_usd || 0);
+    });
+
+    const saleIds = completedSales.map((s: any) => s.id);
+    let top: Array<{ name: string; qty: number }> = [];
+    if (saleIds.length > 0) {
+      const { data: itemsData, error: itemsErr } = await api
+        .from('sale_items')
+        .select('quantity, product_id, sale_id')
+        .in('sale_id', saleIds);
+      if (itemsErr) {
+        showToast('Error al cargar detalle de ventas: ' + errorMessage(itemsErr));
+      } else if (itemsData?.length) {
+        const productMap = await fetchProductNameMap(itemsData.map((i: any) => i.product_id));
+        const productCounts: Record<string, { name: string; qty: number }> = {};
         itemsData.forEach((item: any) => {
-            if(!item.products) return;
-            const pid = item.product_id;
-            if(!productCounts[pid]) {
-                productCounts[pid] = { name: item.products.name, qty: 0 };
-            }
-            productCounts[pid].qty += item.quantity;
+          const pid = item.product_id;
+          const name = productMap[pid]?.name || 'Producto';
+          if (!productCounts[pid]) productCounts[pid] = { name, qty: 0 };
+          productCounts[pid].qty += Number(item.quantity || 0);
         });
-        const top = Object.values(productCounts).sort((a,b) => b.qty - a.qty).slice(0, 10);
-        setTopProducts(top);
+        top = Object.values(productCounts)
+          .sort((a, b) => b.qty - a.qty)
+          .slice(0, 10);
+      }
+    }
+    setTopProducts(top);
+
+    const { data: closuresRaw, error: closuresErr } = await api
+      .from('cash_closures')
+      .select('*')
+      .gte('created_at', startIso)
+      .order('created_at', { ascending: false });
+
+    if (closuresErr) {
+      showToast('Error al cargar cierres: ' + errorMessage(closuresErr));
+    } else if (closuresRaw) {
+      const closureSellerMap = await fetchWorkerMap(closuresRaw.map((c: any) => c.seller_id));
+      setCashClosures(closuresRaw.map((c: any) => withWorkerProfile(c, closureSellerMap)));
+    }
+
+    const { data: expensesData, error: expErr } = await api
+      .from('expenses')
+      .select('amount_usd')
+      .gte('expense_date', expenseFrom);
+
+    if (expErr) {
+      showToast('Error al cargar gastos: ' + errorMessage(expErr));
     }
 
     let totalExpenses = 0;
     if (expensesData) {
-      expensesData.forEach(e => {
-         totalExpenses += Number(e.amount_usd);
+      expensesData.forEach((e: any) => {
+        totalExpenses += Number(e.amount_usd);
       });
     }
 
-    // Ganancia Neta = Ventas - Costo de Ventas - Gastos
     const productProfit = totalSales - totalCost;
     const netProfit = productProfit - totalExpenses;
 
-    setMetrics({ sales: totalSales, expenses: totalExpenses + totalCost, netProfit: netProfit, productProfit: productProfit });
+    setMetrics({
+      sales: totalSales,
+      expenses: totalExpenses + totalCost,
+      netProfit,
+      productProfit,
+    });
   };
 
   const payRecurringExpense = async (expense: any) => {
-    await supabase.from('expenses').insert([{
+    await api.from('expenses').insert([{
       description: expense.description,
       amount_usd: expense.amount_usd,
       category: 'recurring',
     }]);
 
     if (expense.frequency === 'once') {
-      await supabase.from('recurring_expenses').update({ is_active: false }).eq('id', expense.id);
+      await api.from('recurring_expenses').update({ is_active: false }).eq('id', expense.id);
       showToast(`Alerta de gasto "${expense.description}" marcada como pagada y cerrada.`);
     } else {
       const newDueDate = expense.frequency === 'monthly' ? addDays(new Date(expense.next_due_date), 30) : addDays(new Date(expense.next_due_date), 7);
-      await supabase.from('recurring_expenses').update({ next_due_date: newDueDate.toISOString() }).eq('id', expense.id);
+      await api.from('recurring_expenses').update({ next_due_date: newDueDate.toISOString() }).eq('id', expense.id);
       showToast(`Gasto ${expense.description} marcado como pagado.`);
     }
     fetchAlerts();
@@ -842,14 +868,14 @@ export default function AdminDashboard({ onLogout }: Props) {
 
     if (productForm.id) {
        const previous = products.find((p: any) => p.id === productForm.id);
-       const { error } = await supabase.from('products').update(payload).eq('id', productForm.id);
+       const { error } = await api.from('products').update(payload).eq('id', productForm.id);
        if (error) {
          showToast("Error actualizando: " + error.message);
          return;
        }
        const addedStock = Number(payload.stock_quantity) - Number(previous?.stock_quantity || 0);
        if (addedStock > 0) {
-         await supabase.from('expenses').insert([{
+         await api.from('expenses').insert([{
            description: `Reposición: ${payload.name}${payload.flavor ? ` (${payload.flavor})` : ''}`,
            amount_usd: payload.cost_price * addedStock,
            category: 'inventory_purchase'
@@ -857,13 +883,13 @@ export default function AdminDashboard({ onLogout }: Props) {
        }
        showToast("Producto actualizado. Las ventas anteriores conservan su precio y costo.");
     } else {
-       const { error } = await supabase.from('products').insert([payload]);
+       const { error } = await api.from('products').insert([payload]);
        if (error) {
          showToast("Error creando: " + error.message);
          return;
        }
        if (payload.stock_quantity > 0) {
-         await supabase.from('expenses').insert([{
+         await api.from('expenses').insert([{
            description: `Ingreso de mercancía: ${payload.name}${payload.flavor ? ` (${payload.flavor})` : ''}`,
            amount_usd: payload.cost_price * payload.stock_quantity,
            category: 'inventory_purchase'
@@ -902,16 +928,16 @@ export default function AdminDashboard({ onLogout }: Props) {
       if (editingCategory) {
         const oldName = editingCategory.name;
         if (catTitle !== oldName) {
-          const { data: clash } = await supabase.from('product_categories').select('id').eq('name', catTitle).maybeSingle();
+          const { data: clash } = await api.from('product_categories').select('id').eq('name', catTitle).maybeSingle();
           if (clash && clash.id !== editingCategory.id) {
             showToast("Ya existe otra categoría con ese nombre.");
             return;
           }
-          await supabase.from('products').update({ category: catTitle }).eq('category', oldName);
-          await supabase.from('products').update({ subcategory: catTitle }).eq('subcategory', oldName);
-          await supabase.from('product_categories').update({ parent_category: catTitle }).eq('parent_category', oldName);
+          await api.from('products').update({ category: catTitle }).eq('category', oldName);
+          await api.from('products').update({ subcategory: catTitle }).eq('subcategory', oldName);
+          await api.from('product_categories').update({ parent_category: catTitle }).eq('parent_category', oldName);
         }
-        const { error: catErr } = await supabase.from('product_categories').update({
+        const { error: catErr } = await api.from('product_categories').update({
           name: catTitle,
           description: newCategoryDescription.trim() || null,
         }).eq('id', editingCategory.id);
@@ -924,14 +950,14 @@ export default function AdminDashboard({ onLogout }: Props) {
         const validSubcategories = subcategoriesList.map(s => s.trim()).filter(s => s.length > 0);
         for (const sub of existingSubs) {
           if (!validSubcategories.includes(sub.name)) {
-            await supabase.from('products').update({ subcategory: null }).eq('subcategory', sub.name);
-            await supabase.from('product_categories').delete().eq('id', sub.id);
+            await api.from('products').update({ subcategory: null }).eq('subcategory', sub.name);
+            await api.from('product_categories').delete().eq('id', sub.id);
           }
         }
         for (const subTitle of validSubcategories) {
           const already = existingSubs.find((s: any) => s.name === subTitle);
           if (!already) {
-            await supabase.from('product_categories').insert([{
+            await api.from('product_categories').insert([{
               name: subTitle,
               description: newCategoryDescription.trim() || null,
               parent_category: catTitle
@@ -945,10 +971,10 @@ export default function AdminDashboard({ onLogout }: Props) {
         return;
       }
 
-      const { data: existingCat } = await supabase.from('product_categories').select('*').eq('name', catTitle).maybeSingle();
+      const { data: existingCat } = await api.from('product_categories').select('*').eq('name', catTitle).maybeSingle();
       
       if (!existingCat) {
-         const { error: catErr } = await supabase.from('product_categories').insert([{
+         const { error: catErr } = await api.from('product_categories').insert([{
              name: catTitle,
              description: newCategoryDescription.trim() || null,
              parent_category: null
@@ -963,7 +989,7 @@ export default function AdminDashboard({ onLogout }: Props) {
       let firstCreatedSubcat = "";
 
       for (const subTitle of validSubcategories) {
-         const { error: subErr } = await supabase.from('product_categories').insert([{
+         const { error: subErr } = await api.from('product_categories').insert([{
              name: subTitle,
              description: newCategoryDescription.trim() || null,
              parent_category: catTitle
@@ -995,14 +1021,14 @@ export default function AdminDashboard({ onLogout }: Props) {
     if (!categoryToDelete) return;
     const oldName = categoryToDelete.name;
     const target = reassignCategoryName || 'General';
-    await supabase.from('products').update({ category: target }).eq('category', oldName);
-    await supabase.from('products').update({ subcategory: null }).eq('subcategory', oldName);
+    await api.from('products').update({ category: target }).eq('category', oldName);
+    await api.from('products').update({ subcategory: null }).eq('subcategory', oldName);
     const children = productCategories.filter((c: any) => c.parent_category === oldName);
     for (const child of children) {
-      await supabase.from('products').update({ subcategory: null }).eq('subcategory', child.name);
-      await supabase.from('product_categories').delete().eq('id', child.id);
+      await api.from('products').update({ subcategory: null }).eq('subcategory', child.name);
+      await api.from('product_categories').delete().eq('id', child.id);
     }
-    const { error } = await supabase.from('product_categories').delete().eq('id', categoryToDelete.id);
+    const { error } = await api.from('product_categories').delete().eq('id', categoryToDelete.id);
     if (error) {
       showToast("Error al eliminar categoría: " + error.message);
       return;
@@ -1022,7 +1048,7 @@ export default function AdminDashboard({ onLogout }: Props) {
     if (!productToDelete) return;
     try {
       // Soft delete para preservar historial de ventas
-      const { data, error } = await supabase.from('products').update({ is_active: false }).eq('id', productToDelete.id).select();
+      const { data, error } = await api.from('products').update({ is_active: false }).eq('id', productToDelete.id).select();
       
       if (error) {
          showToast("Error al eliminar producto: " + error.message);
@@ -1051,7 +1077,7 @@ export default function AdminDashboard({ onLogout }: Props) {
 
     try {
       if (paymentMethodForm.id) {
-         const { error } = await supabase.from('payment_methods').update(payload).eq('id', paymentMethodForm.id);
+         const { error } = await api.from('payment_methods').update(payload).eq('id', paymentMethodForm.id);
          if (error) {
             console.error("Error al actualizar método de pago:", error);
             const isMissingColumn = (error.message || '').includes('surcharge_percentage') || error.code === 'PGRST204';
@@ -1062,7 +1088,7 @@ export default function AdminDashboard({ onLogout }: Props) {
                setIsSqlCopiado(false);
                
                // Fallback: update without surcharge_percentage
-               const { error: fallbackErr } = await supabase.from('payment_methods').update({
+               const { error: fallbackErr } = await api.from('payment_methods').update({
                   name: paymentMethodForm.name,
                   currency: paymentMethodForm.currency,
                   discount_percentage: paymentMethodForm.discount_percentage || 0,
@@ -1082,7 +1108,7 @@ export default function AdminDashboard({ onLogout }: Props) {
             showToast("Método de pago actualizado exitosamente");
          }
       } else {
-         const { error } = await supabase.from('payment_methods').insert([payload]);
+         const { error } = await api.from('payment_methods').insert([payload]);
          if (error) {
             console.error("Error al registrar método de pago:", error);
             const isMissingColumn = (error.message || '').includes('surcharge_percentage') || error.code === 'PGRST204';
@@ -1093,7 +1119,7 @@ export default function AdminDashboard({ onLogout }: Props) {
                setIsSqlCopiado(false);
                
                // Fallback: insert without surcharge_percentage
-               const { error: fallbackErr } = await supabase.from('payment_methods').insert([{
+               const { error: fallbackErr } = await api.from('payment_methods').insert([{
                   name: paymentMethodForm.name,
                   currency: paymentMethodForm.currency,
                   discount_percentage: paymentMethodForm.discount_percentage || 0,
@@ -1122,19 +1148,19 @@ export default function AdminDashboard({ onLogout }: Props) {
   };
 
   const handleDeletePaymentMethod = async (id: string) => {
-      await supabase.from('payment_methods').delete().eq('id', id);
+      await api.from('payment_methods').delete().eq('id', id);
       showToast("Método de pago eliminado");
       fetchPaymentMethods();
   };
 
   const handlePayExpense = async (expense: any) => {
      if (expense.frequency === 'once') {
-       await supabase.from('expenses').insert([{
+       await api.from('expenses').insert([{
          description: expense.description,
          amount_usd: expense.amount_usd,
          category: 'recurring',
        }]);
-       const { error } = await supabase.from('recurring_expenses').update({ is_active: false }).eq('id', expense.id);
+       const { error } = await api.from('recurring_expenses').update({ is_active: false }).eq('id', expense.id);
        if (error) {
          showToast("Error al procesar pago: " + error.message);
          return;
@@ -1146,7 +1172,7 @@ export default function AdminDashboard({ onLogout }: Props) {
      }
 
      const nextDate = expense.frequency === 'monthly' ? addDays(new Date(expense.next_due_date), 30) : addDays(new Date(expense.next_due_date), 7);
-     const { error } = await supabase.from('recurring_expenses').update({ next_due_date: format(nextDate, 'yyyy-MM-dd') }).eq('id', expense.id);
+     const { error } = await api.from('recurring_expenses').update({ next_due_date: format(nextDate, 'yyyy-MM-dd') }).eq('id', expense.id);
      
      if(error) {
          showToast("Error al procesar pago: " + error.message);
@@ -1180,16 +1206,16 @@ export default function AdminDashboard({ onLogout }: Props) {
      };
      let error;
      if (expenseForm.id) {
-         const { error: updateError } = await supabase.from('recurring_expenses').update(payload).eq('id', expenseForm.id);
+         const { error: updateError } = await api.from('recurring_expenses').update(payload).eq('id', expenseForm.id);
          error = updateError;
      } else {
-         const { error: insertError } = await supabase.from('recurring_expenses').insert([payload]);
+         const { error: insertError } = await api.from('recurring_expenses').insert([payload]);
          error = insertError;
      }
 
      if (error) {
          if (error.message.includes('Could not find the table')) {
-             showToast("Falta la tabla en la base de datos. Por favor, ejecuta el archivo supabase_schema.sql en el SQL Editor de tu cuenta de Supabase.");
+             showToast("Falta la tabla en la base de datos. Por favor, ejecuta el archivo api_schema.sql en el SQL Editor de tu cuenta de Supabase.");
          } else {
              showToast("Error guardando gasto: " + error.message);
          }
@@ -1210,7 +1236,7 @@ export default function AdminDashboard({ onLogout }: Props) {
   const handleConfirmDeleteExpense = async () => {
      if (!expenseToDelete) return;
      try {
-        const { data, error } = await supabase.from('recurring_expenses').delete().eq('id', expenseToDelete.id).select();
+        const { data, error } = await api.from('recurring_expenses').delete().eq('id', expenseToDelete.id).select();
         if (error) {
            showToast("Error al eliminar gasto: " + error.message);
         } else if (!data || data.length === 0) {
@@ -1253,7 +1279,7 @@ export default function AdminDashboard({ onLogout }: Props) {
        if (workerForm.password) {
          updatePayload.password = workerForm.password;
        }
-       const { error } = await supabase.from('worker_profiles').update(updatePayload).eq('id', workerForm.id);
+       const { error } = await api.from('worker_profiles').update(updatePayload).eq('id', workerForm.id);
 
        if (error) {
          showToast("Error al actualizar perfil: " + error.message);
@@ -1270,9 +1296,9 @@ export default function AdminDashboard({ onLogout }: Props) {
 
      const virtualEmail = workerForm.email ? workerForm.email : `${workerForm.document_id.trim()}@caloricofit.com`;
 
-     // En local, signUp no toca la sesión del admin. En cloud, supabase-js también
+     // En local, signUp no toca la sesión del admin. En cloud, api-js también
      // puede usarse así si no persistimos otra sesión en este flujo.
-     const { data, error } = await supabase.auth.signUp({
+     const { data, error } = await api.auth.signUp({
         email: virtualEmail,
         password: workerForm.password,
         options: {
@@ -1304,7 +1330,7 @@ export default function AdminDashboard({ onLogout }: Props) {
      let errorMessage = "";
      if (data.user) {
         // Try to insert manually/upsert in case the trigger fired first or is not set up
-        const { error: profileError } = await supabase.from('worker_profiles').upsert({
+        const { error: profileError } = await api.from('worker_profiles').upsert({
            id: data.user.id,
            first_name: workerForm.first_name,
            last_name: workerForm.last_name,
@@ -1333,7 +1359,7 @@ export default function AdminDashboard({ onLogout }: Props) {
   };
 
   const handleDeleteWorker = async (id: string) => {
-    await supabase.from('worker_profiles').delete().eq('id', id);
+    await api.from('worker_profiles').delete().eq('id', id);
     showToast("Perfil de vendedor eliminado.");
     fetchWorkers();
   };
@@ -1361,14 +1387,14 @@ export default function AdminDashboard({ onLogout }: Props) {
       loyalty_points: Math.max(0, Number(customerForm.loyalty_points) || 0),
     };
     if (customerForm.id) {
-      const { error } = await supabase.from('customers').update(payload).eq('id', customerForm.id);
+      const { error } = await api.from('customers').update(payload).eq('id', customerForm.id);
       if (error) {
         showToast("Error actualizando cliente: " + error.message);
         return;
       }
       showToast("Cliente actualizado.");
     } else {
-      const { error } = await supabase.from('customers').insert([payload]);
+      const { error } = await api.from('customers').insert([payload]);
       if (error) {
         showToast("Error creando cliente: " + (error.message.includes('unique') || error.message.includes('duplicate') ? 'Esa cédula ya está registrada.' : error.message));
         return;
@@ -1382,7 +1408,7 @@ export default function AdminDashboard({ onLogout }: Props) {
 
   const handleConfirmDeleteCustomer = async () => {
     if (!customerToDelete) return;
-    const { error } = await supabase.from('customers').delete().eq('id', customerToDelete.id);
+    const { error } = await api.from('customers').delete().eq('id', customerToDelete.id);
     if (error) {
       showToast("No se pudo eliminar. Si el cliente tiene ventas, anúlalas o consérvalo en el CRM.");
       return;
@@ -1401,34 +1427,26 @@ export default function AdminDashboard({ onLogout }: Props) {
       return;
     }
     try {
-      const { data: items, error: itemsErr } = await supabase.from('sale_items').select('*').eq('sale_id', saleToVoid.id);
-      if (itemsErr) throw itemsErr;
-      for (const item of items || []) {
-        const { data: product } = await supabase.from('products').select('id, stock_quantity').eq('id', item.product_id).maybeSingle();
-        if (product) {
-          await supabase.from('products').update({ stock_quantity: Number(product.stock_quantity || 0) + Number(item.quantity || 0) }).eq('id', product.id);
+      const { error } = await voidSale(saleToVoid.id);
+      if (error) {
+        if (error.message.includes('ya está anulada')) {
+          showToast('Esta venta ya está anulada.');
+        } else {
+          throw new Error(error.message);
         }
+      } else {
+        showToast('Venta anulada. Se restauró el stock y los puntos.');
       }
-      if (saleToVoid.customer_id) {
-        const { data: customer } = await supabase.from('customers').select('id, loyalty_points').eq('id', saleToVoid.customer_id).maybeSingle();
-        if (customer) {
-          const nextPoints = Math.max(0, Number(customer.loyalty_points || 0) - Number(saleToVoid.points_earned || 0) + Number(saleToVoid.points_redeemed || 0));
-          await supabase.from('customers').update({ loyalty_points: nextPoints }).eq('id', customer.id);
-        }
-      }
-      const { error } = await supabase.from('sales').update({ status: 'VOIDED' }).eq('id', saleToVoid.id);
-      if (error) throw error;
-      showToast("Venta anulada. Se restauró el stock y los puntos.");
       setIsVoidSaleModalOpen(false);
       setSaleToVoid(null);
       calculateMetrics();
-    } catch (err: any) {
-      showToast("Error al anular venta: " + (err.message || err));
+    } catch (err: unknown) {
+      showToast('Error al anular venta: ' + errorMessage(err));
     }
   };
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
+    await api.auth.signOut();
     onLogout();
   };
 
@@ -1725,7 +1743,7 @@ export default function AdminDashboard({ onLogout }: Props) {
                       <button 
                         onClick={async () => {
                           const newStatus = w.is_active === false ? true : false;
-                          const { error } = await supabase.from('worker_profiles').update({ is_active: newStatus }).eq('id', w.id);
+                          const { error } = await api.from('worker_profiles').update({ is_active: newStatus }).eq('id', w.id);
                           if(error) showToast("Error: " + error.message); else fetchWorkers();
                         }} 
                         className={`text-xs px-3 py-1 rounded font-bold ${w.is_active === false ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-orange-100 text-orange-700 hover:bg-orange-200'}`}
