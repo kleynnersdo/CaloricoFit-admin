@@ -20,7 +20,6 @@ import {
   resolveBcvRate,
   safeNumber,
   usdToVes,
-  usdToVesReference,
   vesMarkupMultiplier,
 } from "../lib/bcv";
 import BarcodeScanner from "./BarcodeScanner";
@@ -562,11 +561,10 @@ export default function POS({ onLogout }: POSProps) {
   const markupMultiplier = vesMarkupMultiplier(vesMarkupPercentage);
   /** Montos Bs. en pantalla / cobro (BCV + recargo admin, ej. 18%). */
   const toVes = (usd: number) => usdToVes(usd, actualOficialBCV, vesMarkupPercentage);
-  /** Nota de entrega WhatsApp: solo BCV oficial. */
-  const toVesBill = (usd: number) => usdToVesReference(usd, actualOficialBCV);
+  /** Tasa efectiva cobrada en bolívares (BCV + ajuste cambiario). */
+  const effectiveVesRate = actualOficialBCV * markupMultiplier;
   const subtotalVES = toVes(safeNumber(subtotalUSD));
   const totalVES = toVes(totalUSD);
-  const totalVESBill = toVesBill(totalUSD);
   const vesPerUsdForChange = actualOficialBCV * markupMultiplier;
 
   const getPaymentUsdEquivalent = (pmId: string, amount: number) => {
@@ -891,7 +889,10 @@ export default function POS({ onLogout }: POSProps) {
                   <div>Cliente: {customer?.first_name} {customer?.last_name}</div>
                   <div>Cédula: {customer?.document_id}</div>
                   <div>Teléfono: {customer?.phone}</div>
-                  <div>Tasa BCV Aplicada: Bs. {Number(actualOficialBCV || 0).toFixed(2)}</div>
+                  <div>Tasa BCV oficial: Bs. {Number(actualOficialBCV || 0).toFixed(2)}</div>
+                  {Number(vesMarkupPercentage) > 0 && (
+                    <div>Tasa con ajuste cambiario ({Number(vesMarkupPercentage)}%): Bs. {formatBs(effectiveVesRate)}</div>
+                  )}
                 </div>
                 <div className="border-b border-dashed border-gray-300 pb-2 mb-2">
                   <div className="grid grid-cols-12 font-bold mb-1">
@@ -905,30 +906,30 @@ export default function POS({ onLogout }: POSProps) {
                       <div className="col-span-6 line-clamp-1 truncate pr-2">
                         {item.product.name}{item.product.flavor ? ` (${item.product.flavor})` : ''}{item.isWholesale ? ' · MAYOR' : ''}
                       </div>
-                      <div className="col-span-4 text-right">Bs. {formatBs(toVesBill(cartLineSubtotalUsd(item, inventory)))}</div>
+                      <div className="col-span-4 text-right">Bs. {formatBs(toVes(cartLineSubtotalUsd(item, inventory)))}</div>
                     </div>
                   ))}
                 </div>
                 {loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Puntos:</span>
-                     <span>- Bs. {formatBs(toVesBill(loyaltyDiscountAmount))}</span>
+                     <span>- Bs. {formatBs(toVes(loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {discountAmount - loyaltyDiscountAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Dcto. Adicional:</span>
-                     <span>- Bs. {formatBs(toVesBill(discountAmount - loyaltyDiscountAmount))}</span>
+                     <span>- Bs. {formatBs(toVes(discountAmount - loyaltyDiscountAmount))}</span>
                    </div>
                 )}
                 {surchargeAmount > 0 && (
                    <div className="flex justify-between text-sm mt-1 text-gray-600">
                      <span>Recargo Adicional:</span>
-                     <span>+ Bs. {formatBs(toVesBill(surchargeAmount))}</span>
+                     <span>+ Bs. {formatBs(toVes(surchargeAmount))}</span>
                    </div>
                 )}
                 <div className="text-right mt-2 text-base font-bold text-gray-900">
-                  TOTAL A PAGAR: Bs. {formatBs(totalVESBill)}
+                  TOTAL A PAGAR: Bs. {formatBs(totalVES)}
                 </div>
               </div>
 
