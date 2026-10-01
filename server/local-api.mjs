@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import pg from 'pg';
 import crypto from 'node:crypto';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 
 const { Pool } = pg;
 const PORT = Number(process.env.LOCAL_API_PORT || 3032);
@@ -14,8 +16,25 @@ const pool = new Pool({
 });
 
 const app = express();
-app.use(cors({ origin: true }));
+app.use(helmet({ contentSecurityPolicy: false }));
+
+// CORS: en dev refleja cualquier origen; en VPS fijar CORS_ORIGINS (lista separada por comas).
+const CORS_ORIGINS = String(process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+app.use(CORS_ORIGINS.length ? cors({ origin: CORS_ORIGINS }) : cors({ origin: true }));
+
 app.use(express.json({ limit: '2mb' }));
+
+// Anti fuerza bruta sobre el login (15 intentos / 15 min / IP).
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 15,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Demasiados intentos de inicio de sesión. Espera unos minutos.' },
+});
 
 const IDENT_RE = /^[a-z0-9_]+$/i;
 
@@ -180,7 +199,7 @@ app.get('/public/bcv/oficial', async (_req, res) => {
   }
 });
 
-app.post('/auth/login', async (req, res) => {
+app.post('/auth/login', loginLimiter, async (req, res) => {
   try {
     const identifier = String(req.body?.identifier || '').trim();
     const password = String(req.body?.password || '');
@@ -529,6 +548,19 @@ app.post('/admin/purge', requireAuth, requireAdmin, async (req, res) => {
 // ---------------------------------------------------------------------------
 // CRUD genérico con autorización por rol
 // ---------------------------------------------------------------------------
+// Los clientes envían objetos/arrays JSON (p.ej. cash_closures.sales_data, jsonb).
+// node-pg serializa un array JS como literal de array de Postgres ({...}), que
+// rompe las columnas jsonb ("invalid input syntax for type json"). Se envía el
+// JSON ya stringificado y Postgres lo castea a jsonb. Ninguna tabla expuesta
+// tiene columnas de array nativo, así que es seguro para insert/update/upsert.
+function toPgValue(v) {
+  if (v === null || v === undefined) return v;
+  if (Array.isArray(v) || (typeof v === 'object' && !Buffer.isBuffer(v))) {
+    return JSON.stringify(v);
+  }
+  return v;
+}
+
 function buildWhere(filters = [], startIdx = 1) {
   const clauses = [];
   const values = [];
@@ -649,7 +681,7 @@ app.post('/db', requireAuth, async (req, res) => {
       const inserted = [];
       for (const row of rowsIn) {
         const cols = Object.keys(row).filter((c) => IDENT_RE.test(c));
-        const vals = cols.map((c) => row[c]);
+        const vals = cols.map((c) => toPgValue(row[c]));
         const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(', ');
         const returning = hidden.size
           ? cols.filter((c) => !hidden.has(c)).concat(['id']).filter((c, i, a) => a.indexOf(c) === i)
@@ -674,7 +706,7 @@ app.post('/db', requireAuth, async (req, res) => {
         ? WORKER_PUBLIC_COLS.map((c) => `"${c}"`).join(', ')
         : '*';
       const q = `UPDATE "${table}" SET ${sets.join(', ')}${sql} RETURNING ${returning}`;
-      const { rows } = await client.query(q, [...values, ...cols.map((c) => data[c])]);
+      const { rows } = await client.query(q, [...values, ...cols.map((c) => toPgValue(data[c]))]);
       if (table === 'worker_profiles') await hashPlaintextPasswords(client);
       return res.json({ data: single ? rows[0] || null : rows, error: null });
     }
@@ -684,7 +716,7 @@ app.post('/db', requireAuth, async (req, res) => {
       const upserted = [];
       for (const row of rowsIn) {
         const cols = Object.keys(row).filter((c) => IDENT_RE.test(c));
-        const vals = cols.map((c) => row[c]);
+        const vals = cols.map((c) => toPgValue(row[c]));
         const placeholders = cols.map((_, idx) => `$${idx + 1}`).join(', ');
         const updates = cols
           .filter((c) => c !== 'id')
