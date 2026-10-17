@@ -13,7 +13,7 @@ vendedores, gastos, tasa BCV + markup VES, fidelidad, cierre de caja, métricas,
 - React 19 + TypeScript + Vite 6 + Tailwind 4. Sin React Router (el rol decide la pantalla).
 - **Backend único:** Postgres (Docker en dev / VPS en prod) + API Express `server/local-api.mjs`.
 - Frontend: `src/lib/apiClient.ts` + `localClient.ts` (HTTP, sin Supabase).
-- Login: cédula → email virtual `{cedula}@caloricofit.com`. Roles: `admin` → AdminDashboard, `seller` → POS.
+- Login: cédula → email virtual `{cedula}@caloricofit.com`. Roles: `admin` → AdminDashboard, `seller` → POS, `ally` → AllyDashboard.
 
 ## Comandos locales
 
@@ -22,8 +22,8 @@ vendedores, gastos, tasa BCV + markup VES, fidelidad, cierre de caja, métricas,
 - `npm run lint` — typecheck (`tsc --noEmit`).
 - `npm run smoke:sales` — checkout + void (requiere DB + API).
 - DB smoke: puerto **15433**, Adminer http://localhost:8092 (user `calorico` / pass `calorico_smoke` / db `caloricofit`).
-- Login smoke: `admin@caloricofit.com` / `Calorico123*2026`; vendedor: `vendedor@caloricofit.com`.
-- Migración sobre DB existente: `docker exec -i caloricofit-smoke-db psql -U calorico -d caloricofit < db/smoke/03_migrate_features.sql`
+- Login smoke: `admin@caloricofit.com` / `Calorico123*2026`; vendedor: `vendedor@caloricofit.com`; aliado: `aliado@caloricofit.com` (código `ALIADO1`).
+- Migración sobre DB existente: `03_migrate_features.sql` y `05_ally_alliances.sql` vía `docker exec -i caloricofit-smoke-db psql ...`.
 
 ## Env
 

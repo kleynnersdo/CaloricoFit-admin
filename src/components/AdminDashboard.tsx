@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/apiClient';
 import { addDays, differenceInDays, startOfDay } from 'date-fns';
-import { LogOut, Users, Package, BarChart3, Settings, Calendar, FileText, Bell, CheckCircle } from 'lucide-react';
+import { LogOut, Users, Package, BarChart3, Settings, Calendar, FileText, Bell, CheckCircle, Handshake } from 'lucide-react';
 import MetricsTab from './admin/MetricsTab';
 import InventoryTab from './admin/InventoryTab';
 import UsersTab from './admin/UsersTab';
 import CustomersTab from './admin/CustomersTab';
 import ExpensesTab from './admin/ExpensesTab';
 import SettingsTab from './admin/SettingsTab';
+import AlliesTab from './admin/AlliesTab';
 
-type AdminTab = 'metrics' | 'inventory' | 'users' | 'customers' | 'expenses' | 'settings';
+type AdminTab = 'metrics' | 'inventory' | 'users' | 'customers' | 'expenses' | 'settings' | 'allies';
 
 interface Props {
   onLogout: () => void;
@@ -85,6 +86,8 @@ export default function AdminDashboard({ onLogout }: Props) {
         return <UsersTab showToast={showToast} />;
       case 'customers':
         return <CustomersTab showToast={showToast} />;
+      case 'allies':
+        return <AlliesTab showToast={showToast} />;
       case 'expenses':
         return <ExpensesTab showToast={showToast} onAlertsChanged={fetchAlerts} refreshSignal={alertsVersion} />;
       case 'settings':
@@ -145,6 +148,9 @@ export default function AdminDashboard({ onLogout }: Props) {
             </button>
             <button onClick={() => setActiveTab('users')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'users' ? 'bg-orange-50 text-orange-600' : 'text-gray-600 hover:bg-gray-50'}`}>
               <Users className="w-5 h-5" /> Vendedores
+            </button>
+            <button onClick={() => setActiveTab('allies')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'allies' ? 'bg-orange-50 text-orange-600' : 'text-gray-600 hover:bg-gray-50'}`}>
+              <Handshake className="w-5 h-5" /> Alianzas
             </button>
             <button onClick={() => setActiveTab('customers')} className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg font-medium transition-colors ${activeTab === 'customers' ? 'bg-orange-50 text-orange-600' : 'text-gray-600 hover:bg-gray-50'}`}>
               <FileText className="w-5 h-5" /> Base CRM

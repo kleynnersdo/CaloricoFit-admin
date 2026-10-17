@@ -1,6 +1,6 @@
 // Interfaces Tipadas para el Frontend
 
-export type AppRole = 'admin' | 'seller';
+export type AppRole = 'admin' | 'seller' | 'ally';
 
 export interface Product {
   id: string;
@@ -15,6 +15,8 @@ export interface Product {
   wholesale_price?: number;
   min_wholesale_qty?: number;
   stock_quantity: number;
+  /** Puntos que gana el aliado por cada unidad vendida con su código. */
+  ally_points_per_unit?: number;
 }
 
 export interface CartItem {
@@ -63,7 +65,17 @@ export function normalizeProduct(raw: Product): Product {
     wholesale_price: coerceMoney(raw.wholesale_price),
     min_wholesale_qty: coerceMoney(raw.min_wholesale_qty),
     stock_quantity: coerceMoney(raw.stock_quantity),
+    ally_points_per_unit: Math.max(0, Math.floor(coerceMoney(raw.ally_points_per_unit))),
   };
+}
+
+/** Puntos de aliado estimados para el carrito (preview en POS). */
+export function estimateAllyPoints(cart: CartItem[], inventory?: Product[]): number {
+  return cart.reduce((sum, item) => {
+    const product = resolveCartProduct(item, inventory);
+    const qty = cartLineQty(item);
+    return sum + qty * (product.ally_points_per_unit || 0);
+  }, 0);
 }
 
 /** Precio actualizado desde inventario si el snapshot del carrito no trae sale_price. */

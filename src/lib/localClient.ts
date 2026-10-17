@@ -239,7 +239,7 @@ export function createLocalClient() {
         const meta = options?.data || {};
         const res = await fetch(`${getApiBase()}/auth/signup`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders(),
           body: JSON.stringify({
             email,
             password,
@@ -254,7 +254,7 @@ export function createLocalClient() {
         if (!res.ok) {
           return { data: { user: null }, error: { message: json.error || 'Signup failed' } };
         }
-        return { data: { user: json.user }, error: null };
+        return { data: { user: json.user, profile: json.profile }, error: null };
       },
       async signOut() {
         const session = readSession();

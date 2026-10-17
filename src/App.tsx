@@ -2,11 +2,13 @@ import { useEffect, useState } from 'react';
 import POS from './components/POS';
 import Login from './components/Login';
 import AdminDashboard from './components/AdminDashboard';
+import AllyDashboard from './components/AllyDashboard';
 import { api, type AppSession } from './lib/apiClient';
+import type { AppRole } from './types';
 
 export default function App() {
   const [session, setSession] = useState<AppSession | null>(null);
-  const [role, setRole] = useState<'admin' | 'seller' | 'unauthorized' | null>(null);
+  const [role, setRole] = useState<AppRole | 'unauthorized' | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -82,7 +84,13 @@ export default function App() {
           setRole(null);
           return;
         }
-        setRole(data.role as 'admin' | 'seller');
+        const r = data.role as AppRole;
+        if (r === 'admin' || r === 'seller' || r === 'ally') {
+          setRole(r);
+        } else {
+          setRole('unauthorized');
+          setProfileError('Rol de usuario no reconocido.');
+        }
       }
     } catch (error) {
       console.error(error);
@@ -136,6 +144,8 @@ export default function App() {
     <div className="antialiased min-h-screen bg-white">
       {role === 'admin' ? (
         <AdminDashboard onLogout={() => setSession(null)} />
+      ) : role === 'ally' ? (
+        <AllyDashboard onLogout={() => setSession(null)} />
       ) : (
         <POS onLogout={() => setSession(null)} />
       )}

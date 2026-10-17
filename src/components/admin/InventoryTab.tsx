@@ -10,7 +10,7 @@ interface InventoryTabProps {
   showToast: (msg: string) => void;
 }
 
-const emptyProductForm = { name: '', category: 'General', subcategory: '', sku: '', barcode: '', flavor: '', cost_price: 0, sale_price: 0, stock_quantity: 0, wholesale_price: 0, min_wholesale_qty: 0 };
+const emptyProductForm = { name: '', category: 'General', subcategory: '', sku: '', barcode: '', flavor: '', cost_price: 0, sale_price: 0, stock_quantity: 0, wholesale_price: 0, min_wholesale_qty: 0, ally_points_per_unit: 0 };
 
 // Inventario y Categorías: CRUD de productos (con gasto automático de mercancía)
 // y gestión de categorías/subcategorías.
@@ -99,6 +99,7 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
       wholesale_price: Number(productForm.wholesale_price) || 0,
       min_wholesale_qty: Number(productForm.min_wholesale_qty) || 0,
       stock_quantity: Number(productForm.stock_quantity) || 0,
+      ally_points_per_unit: Math.max(0, Math.floor(Number(productForm.ally_points_per_unit) || 0)),
     };
 
     if (productForm.id) {
@@ -393,7 +394,7 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
                   <TableCell className="text-right font-bold">${p.sale_price}</TableCell>
                   <TableCell className="text-right text-sm text-gray-600">{Number(p.wholesale_price) > 0 ? `$${p.wholesale_price} / ${p.min_wholesale_qty || 1}u` : '—'}</TableCell>
                   <TableCell className="text-center">
-                    <button onClick={() => { setProductForm({ ...emptyProductForm, ...p, flavor: p.flavor || '', barcode: p.barcode || '', wholesale_price: p.wholesale_price || 0, min_wholesale_qty: p.min_wholesale_qty || 0 }); setIsProductModalOpen(true); }} className="text-blue-500 hover:text-blue-700 mx-2" title="Editar"><Edit className="w-4 h-4"/></button>
+                    <button onClick={() => { setProductForm({ ...emptyProductForm, ...p, flavor: p.flavor || '', barcode: p.barcode || '', wholesale_price: p.wholesale_price || 0, min_wholesale_qty: p.min_wholesale_qty || 0, ally_points_per_unit: p.ally_points_per_unit || 0 }); setIsProductModalOpen(true); }} className="text-blue-500 hover:text-blue-700 mx-2" title="Editar"><Edit className="w-4 h-4"/></button>
                     <button onClick={() => handleDeleteProduct(p)} className="text-red-500 hover:text-red-700 mx-2" title="Eliminar"><Trash2 className="w-4 h-4"/></button>
                   </TableCell>
                 </tr>
@@ -459,6 +460,17 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
           <div>
             <label className="block text-sm font-medium mb-1">Cantidad mínima al mayor</label>
             <input type="number" className="w-full px-3 py-2 border rounded" value={productForm.min_wholesale_qty || 0} onChange={e => setProductForm({...productForm, min_wholesale_qty: Number(e.target.value)})} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">Puntos aliado / unidad</label>
+            <input
+              type="number"
+              min={0}
+              className="w-full px-3 py-2 border rounded"
+              value={productForm.ally_points_per_unit ?? 0}
+              onChange={(e) => setProductForm({ ...productForm, ally_points_per_unit: Number(e.target.value) })}
+            />
+            <p className="text-xs text-gray-500 mt-1">Se acumulan al aliado cuando la venta usa su código promocional.</p>
           </div>
           <p className="text-xs text-gray-500">Cambiar costo o precio no modifica ventas ni ganancias ya registradas.</p>
           <button onClick={handleSaveProduct} className="w-full bg-black text-white font-bold py-3 pt-3 rounded-lg mt-4">Guardar Producto</button>

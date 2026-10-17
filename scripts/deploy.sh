@@ -47,9 +47,19 @@ for i in {1..30}; do
   sleep 2
 done
 
+if [[ -f db/smoke/03_migrate_features.sql ]]; then
+  echo "==> Migración features (mayor / void / once)"
+  docker exec -i caloricofit-prod-db psql -U calorico -d caloricofit < db/smoke/03_migrate_features.sql
+fi
+
 if [[ -f db/smoke/04_security.sql ]]; then
   echo "==> Migración seguridad (sessions / audit_log)"
   docker exec -i caloricofit-prod-db psql -U calorico -d caloricofit < db/smoke/04_security.sql
+fi
+
+if [[ -f db/smoke/05_ally_alliances.sql ]]; then
+  echo "==> Migración alianzas (aliados / puntos / ledger)"
+  docker exec -i caloricofit-prod-db psql -U calorico -d caloricofit < db/smoke/05_ally_alliances.sql
 fi
 
 if [[ -n "${ADMIN_EMAIL:-}" && -n "${ADMIN_PASSWORD:-}" ]]; then

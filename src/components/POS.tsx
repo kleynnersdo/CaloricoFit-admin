@@ -10,7 +10,9 @@ import {
   cartUnitPriceUsd,
   lineUnitPrice,
   normalizeProduct,
+  resolveCartProduct,
   sumCartSubtotalUsd,
+  estimateAllyPoints,
 } from "../types";
 import { GLOBAL_CONFIG, cn, emptyToNull } from "../lib/utils";
 import {
@@ -25,6 +27,7 @@ import {
 import BarcodeScanner from "./BarcodeScanner";
 import { api } from "../lib/apiClient";
 import { checkoutSale } from "../lib/salesApi";
+import { lookupPromoCode, type AllyProfile } from "../lib/alliesApi";
 import { errorMessage } from "../lib/apiError";
 import * as htmlToImage from "html-to-image";
 
@@ -80,6 +83,10 @@ export default function POS({ onLogout }: POSProps) {
   const [selectedMultiMethodId, setSelectedMultiMethodId] = useState<string>('');
   const [multiAmountInput, setMultiAmountInput] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [allyPromoInput, setAllyPromoInput] = useState('');
+  const [allyPreview, setAllyPreview] = useState<AllyProfile | null>(null);
+  const [allyLookupError, setAllyLookupError] = useState<string | null>(null);
+  const [allyLookingUp, setAllyLookingUp] = useState(false);
 
   const fetchTodaySales = async () => {
       try {
@@ -131,6 +138,21 @@ export default function POS({ onLogout }: POSProps) {
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const validateAllyPromo = async () => {
+    const code = allyPromoInput.trim();
+    if (!code) return;
+    setAllyLookingUp(true);
+    setAllyLookupError(null);
+    const { data, error } = await lookupPromoCode(code);
+    setAllyLookingUp(false);
+    if (error || !data) {
+      setAllyPreview(null);
+      setAllyLookupError(error?.message || 'Código no encontrado');
+      return;
+    }
+    setAllyPreview(data);
   };
 
   useEffect(() => {
@@ -831,13 +853,21 @@ export default function POS({ onLogout }: POSProps) {
       const { data: sale, error: saleError } = await checkoutSale({
         sale: salePayload,
         items: checkoutItems,
+        promo_code: allyPreview?.promo_code || allyPromoInput.trim() || null,
       });
 
       if (saleError || !sale) {
         throw new Error(saleError?.message || 'No se pudo registrar la venta');
       }
 
-      showToast(cartHasWholesale ? "Venta al mayor procesada." : "Venta procesada exitosamente.");
+      const allyPts = Number((sale as { ally_points_earned?: number }).ally_points_earned || 0);
+      showToast(
+        allyPts > 0
+          ? `Venta OK. +${allyPts} pts para ${allyPreview?.first_name || 'aliado'}.`
+          : cartHasWholesale
+            ? 'Venta al mayor procesada.'
+            : 'Venta procesada exitosamente.'
+      );
       setCart([]);
       setCustomer(null);
       setAppliedReward(false);
@@ -845,6 +875,9 @@ export default function POS({ onLogout }: POSProps) {
       setGiveChange(false);
       setIsMultiCurrency(false);
       setMultiPayments({});
+      setAllyPromoInput('');
+      setAllyPreview(null);
+      setAllyLookupError(null);
       setIsCheckoutModalOpen(false);
       
       // Refrescar inventario y ventas del día
@@ -873,12 +906,12 @@ export default function POS({ onLogout }: POSProps) {
       {/* Modal de Ticket / Checkout */}
       {isCheckoutModalOpen && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-xl w-full max-w-md overflow-hidden">
-            <div className="bg-orange-500 text-white p-4 text-center">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-xl overflow-hidden max-h-[92vh] flex flex-col">
+            <div className="bg-orange-500 text-white p-4 text-center shrink-0">
                <h3 className="font-bold text-lg">Confirma la venta con tu cliente</h3>
             </div>
             
-            <div className="p-6">
+            <div className="p-5 overflow-y-auto">
               <div ref={ticketRef} className="border border-gray-200 rounded-lg p-4 bg-gray-50 mb-4 drop-shadow-sm font-mono text-sm leading-relaxed text-gray-700">
                 <div className="text-center mb-4 border-b border-dashed border-gray-300 pb-2">
                   <div className="font-extrabold text-lg tracking-wider text-gray-900 uppercase">NOTA DE ENTREGA</div>
@@ -938,6 +971,46 @@ export default function POS({ onLogout }: POSProps) {
                       <svg viewBox="0 0 24 24" width="18" height="18" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round" className="css-i6dzq1"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"></path></svg>
                       Enviar al WhatsApp
                   </button>
+              </div>
+
+              <div className="mb-4 bg-violet-50 border border-violet-200 px-3 py-2 rounded-lg">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-bold text-violet-900 whitespace-nowrap">Código aliado</span>
+                  <input
+                    type="text"
+                    className="flex-1 min-w-[7rem] px-2.5 py-1.5 border border-violet-300 rounded outline-none focus:border-violet-500 font-mono uppercase text-sm bg-white"
+                    placeholder="ALIADO1"
+                    value={allyPromoInput}
+                    onChange={(e) => {
+                      setAllyPromoInput(e.target.value.toUpperCase());
+                      setAllyPreview(null);
+                      setAllyLookupError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void validateAllyPromo();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={allyLookingUp || !allyPromoInput.trim()}
+                    onClick={() => void validateAllyPromo()}
+                    className="px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white rounded-md text-xs font-bold disabled:opacity-50 whitespace-nowrap"
+                  >
+                    {allyLookingUp ? '…' : 'Validar'}
+                  </button>
+                  {allyPreview && (
+                    <span className="text-xs text-violet-900 font-medium whitespace-nowrap">
+                      → <b>{allyPreview.first_name}</b> ·{' '}
+                      <b className="text-violet-700">{estimateAllyPoints(cart, inventory)} pts</b>
+                    </span>
+                  )}
+                </div>
+                {allyLookupError && (
+                  <p className="mt-1 text-xs text-red-600 font-medium">{allyLookupError}</p>
+                )}
               </div>
 
               {customer && customer.loyalty_points > 0 && !isMultiCurrency && selectedPaymentMethod?.currency === 'POINTS' && (
@@ -1739,6 +1812,16 @@ export default function POS({ onLogout }: POSProps) {
                     </span>
                   )}
                 </div>
+                {(() => {
+                  const ptsU = resolveCartProduct(item, inventory).ally_points_per_unit || 0;
+                  if (ptsU <= 0) return null;
+                  const linePts = cartLineQty(item) * ptsU;
+                  return (
+                    <div className="text-[11px] font-semibold text-violet-700 mb-1.5">
+                      Aliado: {ptsU} pts/u{linePts !== ptsU ? ` · ${linePts} pts` : ''}
+                    </div>
+                  );
+                })()}
                 <div className="flex items-center gap-2">
                   <div className="flex items-center border border-gray-200 rounded overflow-hidden h-8">
                     <button onClick={() => handleUpdateQuantity(item.product.id, item.quantity - 1, !!item.isWholesale)} className="px-2 pb-1 bg-gray-50 hover:bg-gray-100 text-gray-600 font-bold">-</button>
@@ -1766,6 +1849,50 @@ export default function POS({ onLogout }: POSProps) {
 
         {/* Totales y Checkout — siempre visible (no scroll) */}
         <div className="shrink-0 bg-white border-t-2 border-orange-200 p-4 shadow-[0_-10px_20px_rgba(0,0,0,0.06)] max-h-[55vh] overflow-y-auto">
+          <div className="mb-3 px-2.5 py-2 rounded-lg bg-violet-50 border border-violet-200">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-bold text-violet-900 uppercase shrink-0">Aliado</span>
+              <input
+                type="text"
+                className="flex-1 min-w-0 px-2 py-1 border border-violet-300 rounded outline-none focus:border-violet-500 font-mono uppercase text-xs bg-white"
+                placeholder="ALIADO1"
+                value={allyPromoInput}
+                onChange={(e) => {
+                  setAllyPromoInput(e.target.value.toUpperCase());
+                  setAllyPreview(null);
+                  setAllyLookupError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void validateAllyPromo();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                disabled={allyLookingUp || !allyPromoInput.trim()}
+                onClick={() => void validateAllyPromo()}
+                className="px-2 py-1 bg-violet-600 hover:bg-violet-700 text-white rounded text-[11px] font-bold disabled:opacity-50 shrink-0"
+              >
+                {allyLookingUp ? '…' : 'OK'}
+              </button>
+            </div>
+            {(allyLookupError || allyPreview || (cart.length > 0 && estimateAllyPoints(cart, inventory) > 0)) && (
+              <div className="mt-1 text-[11px] leading-tight">
+                {allyLookupError && <span className="text-red-600 font-medium">{allyLookupError}</span>}
+                {!allyLookupError && allyPreview && (
+                  <span className="text-violet-900 font-medium">
+                    {allyPreview.first_name} · <b>{estimateAllyPoints(cart, inventory)} pts</b>
+                  </span>
+                )}
+                {!allyLookupError && !allyPreview && cart.length > 0 && estimateAllyPoints(cart, inventory) > 0 && (
+                  <span className="text-violet-600">{estimateAllyPoints(cart, inventory)} pts si validas código</span>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="mb-3 p-3 rounded-lg bg-slate-800 text-white text-sm">
             <div className="flex justify-between items-center gap-2">
               <span className="font-medium opacity-90">Tipo de cambio BCV</span>

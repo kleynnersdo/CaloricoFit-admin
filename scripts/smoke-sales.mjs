@@ -68,6 +68,39 @@ async function main() {
     process.exit(1);
   }
 
+  const allyBeforeRes = await fetch(`${API}/db`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({
+      table: 'worker_profiles',
+      action: 'select',
+      select: 'id, ally_points, promo_code',
+      filters: [{ op: 'eq', col: 'promo_code', val: 'ALIADO1' }],
+      single: true,
+    }),
+  });
+  const allyBeforeBody = await json(allyBeforeRes);
+  const ally = allyBeforeBody.data;
+  if (!ally?.id) {
+    console.error('No ally ALIADO1 — aplica db/smoke/05_ally_alliances.sql', allyBeforeBody);
+    process.exit(1);
+  }
+  const allyPtsBefore = Number(ally.ally_points || 0);
+
+  const prodPtsRes = await fetch(`${API}/db`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({
+      table: 'products',
+      action: 'select',
+      select: 'ally_points_per_unit',
+      filters: [{ op: 'eq', col: 'id', val: product.id }],
+      single: true,
+    }),
+  });
+  const prodPtsBody = await json(prodPtsRes);
+  const ptsPerUnit = Number(prodPtsBody.data?.ally_points_per_unit || 0);
+
   const checkoutRes = await fetch(`${API}/sales/checkout`, {
     method: 'POST',
     headers: auth,
@@ -85,6 +118,7 @@ async function main() {
         points_redeemed: 0,
         is_wholesale: false,
       },
+      promo_code: 'ALIADO1',
       items: [
         {
           product_id: product.id,
@@ -101,6 +135,11 @@ async function main() {
     process.exit(1);
   }
   const saleId = checkoutBody.data.id;
+  const earned = Number(checkoutBody.data.ally_points_earned || 0);
+  if (earned !== ptsPerUnit) {
+    console.error(`Ally points earned expected ${ptsPerUnit}, got ${earned}`);
+    process.exit(1);
+  }
 
   const afterRes = await fetch(`${API}/db`, {
     method: 'POST',
@@ -148,7 +187,25 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('smoke:sales OK — checkout, stock, void');
+  const allyAfterRes = await fetch(`${API}/db`, {
+    method: 'POST',
+    headers: auth,
+    body: JSON.stringify({
+      table: 'worker_profiles',
+      action: 'select',
+      select: 'ally_points',
+      filters: [{ op: 'eq', col: 'id', val: ally.id }],
+      single: true,
+    }),
+  });
+  const allyAfterBody = await json(allyAfterRes);
+  const allyPtsFinal = Number(allyAfterBody.data?.ally_points || 0);
+  if (allyPtsFinal !== allyPtsBefore) {
+    console.error(`Ally points after void expected ${allyPtsBefore}, got ${allyPtsFinal}`);
+    process.exit(1);
+  }
+
+  console.log('smoke:sales OK — checkout, stock, void, ally points');
 }
 
 main().catch((e) => {

@@ -11,7 +11,8 @@ npm run dev:local
 - API: http://localhost:3032  
 - Login: `admin@caloricofit.com` / `Calorico123*2026`  
   o cédula `V00000000` / `Calorico123*2026`  
-  vendedor: `vendedor@caloricofit.com` / `Calorico123*2026`
+  vendedor: `vendedor@caloricofit.com` / `Calorico123*2026`  
+  aliado: `aliado@caloricofit.com` / `Calorico123*2026` (código promo `ALIADO1`)
 
 `.env` debe tener `VITE_API_URL=http://localhost:3032` (o `VITE_LOCAL_API_URL` equivalente).
 
@@ -21,9 +22,11 @@ Si el contenedor Postgres ya tenía datos antiguos, aplica:
 
 ```bash
 docker exec -i caloricofit-smoke-db psql -U calorico -d caloricofit < db/smoke/03_migrate_features.sql
+docker exec -i caloricofit-smoke-db psql -U calorico -d caloricofit < db/smoke/05_ally_alliances.sql
 ```
 
-Agrega: `products.flavor`, precios al mayor, `sales.is_wholesale`, anulación (`VOIDED`) y gasto `once`.
+- `03`: `products.flavor`, precios al mayor, `sales.is_wholesale`, anulación (`VOIDED`) y gasto `once`.
+- `05`: rol `ally`, códigos promo, puntos de aliado por producto, ledger de canjes.
 
 ---
 

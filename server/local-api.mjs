@@ -70,16 +70,48 @@ const TABLE_RULES = {
   recurring_expenses: { select: 'admin', insert: 'admin', update: 'admin', upsert: 'admin', delete: 'admin' },
   payment_methods: { select: 'auth', insert: 'admin', update: 'admin', upsert: 'admin', delete: 'admin' },
   audit_log: { select: 'admin', insert: 'server', update: 'server', upsert: 'server', delete: 'server' },
+  ally_point_ledger: { select: 'server', insert: 'server', update: 'server', upsert: 'server', delete: 'server' },
 };
 
 const WORKER_PUBLIC_COLS = [
-  'id', 'first_name', 'last_name', 'document_id', 'email', 'phone', 'role', 'is_active', 'created_at',
+  'id', 'first_name', 'last_name', 'document_id', 'email', 'phone', 'role',
+  'promo_code', 'ally_points', 'is_active', 'created_at',
 ];
 
 const PRODUCT_SELLER_COLS = [
   'id', 'name', 'category', 'subcategory', 'flavor', 'sku', 'barcode', 'image_url',
-  'sale_price', 'wholesale_price', 'min_wholesale_qty', 'stock_quantity', 'is_active', 'created_at',
+  'sale_price', 'wholesale_price', 'min_wholesale_qty', 'stock_quantity',
+  'ally_points_per_unit', 'is_active', 'created_at',
 ];
+
+const PROMO_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+function generatePromoCode(length = 6) {
+  let code = '';
+  for (let i = 0; i < length; i++) {
+    code += PROMO_CODE_ALPHABET[crypto.randomInt(0, PROMO_CODE_ALPHABET.length)];
+  }
+  return code;
+}
+
+async function allocateUniquePromoCode(client, maxAttempts = 12) {
+  for (let i = 0; i < maxAttempts; i++) {
+    const code = generatePromoCode(6);
+    const { rows } = await client.query(
+      'SELECT 1 FROM worker_profiles WHERE promo_code = $1 LIMIT 1',
+      [code]
+    );
+    if (!rows[0]) return code;
+  }
+  throw httpError(500, 'No se pudo generar un código promocional único');
+}
+
+function requireAlly(req, res, next) {
+  if (req.user?.role !== 'ally') {
+    return res.status(403).json({ error: 'Requiere rol aliado' });
+  }
+  next();
+}
 
 function sanitizeSelectList(select) {
   if (!select || select === '*') return '*';
@@ -307,29 +339,38 @@ app.get('/auth/me', requireAuth, async (req, res) => {
 });
 
 app.post('/auth/signup', requireAuth, requireAdmin, async (req, res) => {
+  const client = await pool.connect();
   try {
     const { email, password, first_name, last_name, document_id, phone, role } = req.body || {};
     if (!email || !password) {
       return res.status(400).json({ error: 'Email y password son obligatorios' });
     }
-    const idResult = await pool.query('SELECT uuid_generate_v4() AS id');
+    const finalRole = ['admin', 'seller', 'ally'].includes(role) ? role : 'seller';
+    const idResult = await client.query('SELECT uuid_generate_v4() AS id');
     const id = idResult.rows[0].id;
 
-    await pool.query(
+    await client.query('BEGIN');
+
+    await client.query(
       `INSERT INTO auth.users (id, email, raw_user_meta_data)
        VALUES ($1, $2, $3::jsonb)
        ON CONFLICT (id) DO NOTHING`,
       [
         id,
         email,
-        JSON.stringify({ first_name, last_name, document_id, phone, role: role || 'seller' }),
+        JSON.stringify({ first_name, last_name, document_id, phone, role: finalRole }),
       ]
     );
 
-    await pool.query(
+    let promoCode = null;
+    if (finalRole === 'ally') {
+      promoCode = await allocateUniquePromoCode(client);
+    }
+
+    await client.query(
       `INSERT INTO worker_profiles
-        (id, first_name, last_name, document_id, email, phone, role, is_active, password)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,true,crypt($8, gen_salt('bf')))`,
+        (id, first_name, last_name, document_id, email, phone, role, promo_code, ally_points, is_active, password)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true,crypt($10, gen_salt('bf')))`,
       [
         id,
         first_name || 'Nuevo',
@@ -337,24 +378,39 @@ app.post('/auth/signup', requireAuth, requireAdmin, async (req, res) => {
         document_id || null,
         email,
         phone || null,
-        role || 'seller',
+        finalRole,
+        promoCode,
+        0,
         password,
       ]
     );
 
-    await pool.query(
-      `INSERT INTO audit_log (actor_id, actor_email, action, entity, entity_id, detail)
-       VALUES ($1, $2, 'worker.create', 'worker_profiles', $3, $4::jsonb)`,
-      [req.user.id, req.user.email, id, JSON.stringify({ email, role: role || 'seller' })]
-    );
+    await audit(client, req.user, 'worker.create', 'worker_profiles', id, {
+      email,
+      role: finalRole,
+      promo_code: promoCode,
+    });
+
+    await client.query('COMMIT');
 
     res.json({
       user: { id, email },
-      profile: { id, email, first_name, last_name, role: role || 'seller' },
+      profile: {
+        id,
+        email,
+        first_name,
+        last_name,
+        role: finalRole,
+        promo_code: promoCode,
+        ally_points: 0,
+      },
     });
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error(e);
-    res.status(500).json({ error: String(e.message || e) });
+    res.status(e.httpStatus || 500).json({ error: String(e.message || e) });
+  } finally {
+    client.release();
   }
 });
 
@@ -370,12 +426,31 @@ const SALE_INPUT_COLS = [
 app.post('/sales/checkout', requireAuth, async (req, res) => {
   const client = await pool.connect();
   try {
-    const { sale, items } = req.body || {};
+    if (req.user.role === 'ally') {
+      return res.status(403).json({ error: 'Los aliados no pueden registrar ventas' });
+    }
+    const { sale, items, promo_code: bodyPromo } = req.body || {};
     if (!sale || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Venta e items son obligatorios' });
     }
 
     await client.query('BEGIN');
+
+    const rawPromo = String(bodyPromo || sale.promo_code || '').trim().toUpperCase();
+    let allyId = null;
+    let allyPromoCode = null;
+    let allyPointsEarned = 0;
+    if (rawPromo) {
+      const { rows: allyRows } = await client.query(
+        `SELECT id, promo_code FROM worker_profiles
+         WHERE role = 'ally' AND is_active = true AND UPPER(promo_code) = $1
+         LIMIT 1`,
+        [rawPromo]
+      );
+      if (!allyRows[0]) throw httpError(400, 'Código de aliado inválido o inactivo');
+      allyId = allyRows[0].id;
+      allyPromoCode = allyRows[0].promo_code;
+    }
 
     let totalCost = 0;
     const preparedItems = [];
@@ -384,7 +459,8 @@ app.post('/sales/checkout', requireAuth, async (req, res) => {
         throw httpError(400, 'Item inválido: product_id y quantity son obligatorios');
       }
       const { rows } = await client.query(
-        'SELECT name, stock_quantity, cost_price FROM products WHERE id = $1 FOR UPDATE',
+        `SELECT name, stock_quantity, cost_price, COALESCE(ally_points_per_unit, 0) AS ally_points_per_unit
+         FROM products WHERE id = $1 FOR UPDATE`,
         [item.product_id]
       );
       const product = rows[0];
@@ -396,11 +472,15 @@ app.post('/sales/checkout', requireAuth, async (req, res) => {
         'UPDATE products SET stock_quantity = stock_quantity - $1 WHERE id = $2',
         [item.quantity, item.product_id]
       );
+      const qty = Number(item.quantity);
       const unitCost = Number(product.cost_price || 0);
-      totalCost += unitCost * Number(item.quantity);
+      totalCost += unitCost * qty;
+      if (allyId) {
+        allyPointsEarned += qty * Number(product.ally_points_per_unit || 0);
+      }
       preparedItems.push({
         product_id: item.product_id,
-        quantity: Number(item.quantity),
+        quantity: qty,
         unit_price_usd: Number(item.unit_price_usd || 0),
         unit_cost_usd: unitCost,
         subtotal_usd: Number(item.subtotal_usd || 0),
@@ -409,10 +489,14 @@ app.post('/sales/checkout', requireAuth, async (req, res) => {
 
     const cols = SALE_INPUT_COLS.filter((c) => sale[c] !== undefined);
     const vals = cols.map((c) => sale[c]);
-    const saleSql = `INSERT INTO sales (${cols.map((c) => `"${c}"`).join(', ')}, seller_id, cost_usd, status)
-                     VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')}, $${cols.length + 1}, $${cols.length + 2}, 'COMPLETED')
+    const extraCols = ['seller_id', 'cost_usd', 'status', 'ally_id', 'ally_promo_code', 'ally_points_earned'];
+    const extraVals = [req.user.id, totalCost, 'COMPLETED', allyId, allyPromoCode, allyPointsEarned];
+    const allCols = [...cols, ...extraCols];
+    const allVals = [...vals, ...extraVals];
+    const saleSql = `INSERT INTO sales (${allCols.map((c) => `"${c}"`).join(', ')})
+                     VALUES (${allCols.map((_, i) => `$${i + 1}`).join(', ')})
                      RETURNING *`;
-    const { rows: saleRows } = await client.query(saleSql, [...vals, req.user.id, totalCost]);
+    const { rows: saleRows } = await client.query(saleSql, allVals);
     const saleRow = saleRows[0];
 
     for (const item of preparedItems) {
@@ -432,10 +516,25 @@ app.post('/sales/checkout', requireAuth, async (req, res) => {
       );
     }
 
+    if (allyId && allyPointsEarned > 0) {
+      await client.query(
+        'UPDATE worker_profiles SET ally_points = COALESCE(ally_points, 0) + $1 WHERE id = $2',
+        [allyPointsEarned, allyId]
+      );
+      await client.query(
+        `INSERT INTO ally_point_ledger
+          (ally_id, kind, points, sale_id, notes, status, created_by)
+         VALUES ($1, 'earn', $2, $3, $4, 'posted', $5)`,
+        [allyId, allyPointsEarned, saleRow.id, `Venta ${allyPromoCode}`, req.user.id]
+      );
+    }
+
     await audit(client, req.user, 'sale.checkout', 'sales', saleRow.id, {
       total_usd: saleRow.total_usd,
       items: preparedItems.length,
       payment_method: saleRow.payment_method,
+      ally_id: allyId,
+      ally_points_earned: allyPointsEarned,
     });
 
     await client.query('COMMIT');
@@ -482,14 +581,425 @@ app.post('/sales/:id/void', requireAuth, requireAdmin, async (req, res) => {
       );
     }
 
+    const allyPts = Number(sale.ally_points_earned || 0);
+    if (sale.ally_id && allyPts > 0) {
+      await client.query(
+        'UPDATE worker_profiles SET ally_points = GREATEST(0, COALESCE(ally_points, 0) - $1) WHERE id = $2',
+        [allyPts, sale.ally_id]
+      );
+      await client.query(
+        `INSERT INTO ally_point_ledger
+          (ally_id, kind, points, sale_id, notes, status, created_by)
+         VALUES ($1, 'void_reversal', $2, $3, $4, 'posted', $5)`,
+        [sale.ally_id, -allyPts, saleId, 'Anulación de venta', req.user.id]
+      );
+    }
+
     await client.query("UPDATE sales SET status = 'VOIDED' WHERE id = $1", [saleId]);
     await audit(client, req.user, 'sale.void', 'sales', saleId, {
       total_usd: sale.total_usd,
       items_restored: items.length,
+      ally_points_reversed: allyPts || 0,
     });
 
     await client.query('COMMIT');
     res.json({ data: { id: saleId, status: 'VOIDED' }, error: null });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(e);
+    res.status(e.httpStatus || 500).json({ data: null, error: { message: String(e.message || e) } });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Alianzas: lookup de código, panel admin y panel aliado
+// ---------------------------------------------------------------------------
+app.get('/promo/lookup', requireAuth, async (req, res) => {
+  try {
+    if (req.user.role === 'ally') {
+      return res.status(403).json({ error: 'No permitido' });
+    }
+    const code = String(req.query.code || '').trim().toUpperCase();
+    if (!code) return res.status(400).json({ error: 'Código requerido' });
+    const { rows } = await pool.query(
+      `SELECT id, first_name, last_name, promo_code
+       FROM worker_profiles
+       WHERE role = 'ally' AND is_active = true AND UPPER(promo_code) = $1
+       LIMIT 1`,
+      [code]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Código no encontrado' });
+    res.json({ data: rows[0], error: null });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get('/allies', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim();
+    const params = [];
+    let where = `WHERE role = 'ally'`;
+    if (q) {
+      params.push(`%${q}%`);
+      where += ` AND (
+        first_name ILIKE $1 OR last_name ILIKE $1 OR document_id ILIKE $1
+        OR email ILIKE $1 OR promo_code ILIKE $1
+      )`;
+    }
+    const { rows } = await pool.query(
+      `SELECT id, first_name, last_name, document_id, email, phone, promo_code,
+              ally_points, is_active, created_at
+       FROM worker_profiles
+       ${where}
+       ORDER BY created_at DESC`,
+      params
+    );
+    res.json({ data: rows, error: null });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ data: null, error: { message: String(e.message || e) } });
+  }
+});
+
+function normalizePromoCode(raw) {
+  return String(raw || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+app.patch('/allies/:id', requireAuth, requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const allyId = req.params.id;
+    const { first_name, last_name, promo_code, phone, document_id } = req.body || {};
+
+    await client.query('BEGIN');
+    const { rows: allyRows } = await client.query(
+      `SELECT id, promo_code FROM worker_profiles WHERE id = $1 AND role = 'ally' FOR UPDATE`,
+      [allyId]
+    );
+    if (!allyRows[0]) throw httpError(404, 'Aliado no encontrado');
+
+    const updates = [];
+    const vals = [];
+    let i = 1;
+
+    if (first_name !== undefined) {
+      const fn = String(first_name || '').trim();
+      if (!fn) throw httpError(400, 'Nombre obligatorio');
+      updates.push(`first_name = $${i++}`);
+      vals.push(fn);
+    }
+    if (last_name !== undefined) {
+      const ln = String(last_name || '').trim();
+      if (!ln) throw httpError(400, 'Apellido obligatorio');
+      updates.push(`last_name = $${i++}`);
+      vals.push(ln);
+    }
+    if (phone !== undefined) {
+      updates.push(`phone = $${i++}`);
+      vals.push(phone ? String(phone).trim() : null);
+    }
+    if (document_id !== undefined) {
+      updates.push(`document_id = $${i++}`);
+      vals.push(document_id ? String(document_id).trim() : null);
+    }
+    if (promo_code !== undefined) {
+      const code = normalizePromoCode(promo_code);
+      if (code.length < 4 || code.length > 12) {
+        throw httpError(400, 'El código debe tener entre 4 y 12 caracteres (letras/números)');
+      }
+      const { rows: clash } = await client.query(
+        `SELECT id FROM worker_profiles
+         WHERE UPPER(promo_code) = $1 AND id <> $2
+         LIMIT 1`,
+        [code, allyId]
+      );
+      if (clash[0]) throw httpError(409, 'Ese código ya está en uso por otro aliado');
+      updates.push(`promo_code = $${i++}`);
+      vals.push(code);
+    }
+
+    if (!updates.length) throw httpError(400, 'Nada que actualizar');
+
+    vals.push(allyId);
+    const { rows } = await client.query(
+      `UPDATE worker_profiles SET ${updates.join(', ')}
+       WHERE id = $${i} AND role = 'ally'
+       RETURNING id, first_name, last_name, document_id, email, phone, promo_code, ally_points, is_active, created_at`,
+      vals
+    );
+
+    await audit(client, req.user, 'ally.update', 'worker_profiles', allyId, {
+      fields: Object.keys(req.body || {}),
+      promo_code: rows[0]?.promo_code,
+    });
+    await client.query('COMMIT');
+    res.json({ data: rows[0], error: null });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(e);
+    res.status(e.httpStatus || 500).json({ data: null, error: { message: String(e.message || e) } });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/allies/redeem-requests', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const status = String(req.query.status || 'pending');
+    const { rows } = await pool.query(
+      `SELECT l.*, w.first_name, w.last_name, w.promo_code, w.ally_points AS ally_balance
+       FROM ally_point_ledger l
+       JOIN worker_profiles w ON w.id = l.ally_id
+       WHERE l.kind = 'redeem_request' AND l.status = $1
+       ORDER BY l.created_at ASC`,
+      [status]
+    );
+    res.json({ data: rows, error: null });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ data: null, error: { message: String(e.message || e) } });
+  }
+});
+
+app.get('/allies/:id/ledger', requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, ally_id, kind, points, sale_id, notes, status,
+              created_by, resolved_by, resolved_at, created_at
+       FROM ally_point_ledger
+       WHERE ally_id = $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [req.params.id]
+    );
+    res.json({ data: rows, error: null });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ data: null, error: { message: String(e.message || e) } });
+  }
+});
+
+app.post('/allies/:id/redeems', requireAuth, requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const allyId = req.params.id;
+    const { action, points, notes, request_id } = req.body || {};
+    await client.query('BEGIN');
+
+    const { rows: allyRows } = await client.query(
+      `SELECT id, ally_points, first_name, last_name FROM worker_profiles
+       WHERE id = $1 AND role = 'ally' FOR UPDATE`,
+      [allyId]
+    );
+    const ally = allyRows[0];
+    if (!ally) throw httpError(404, 'Aliado no encontrado');
+
+    if (action === 'approve' || action === 'reject') {
+      if (!request_id) throw httpError(400, 'request_id es obligatorio');
+      const { rows: reqRows } = await client.query(
+        `SELECT * FROM ally_point_ledger
+         WHERE id = $1 AND ally_id = $2 AND kind = 'redeem_request' FOR UPDATE`,
+        [request_id, allyId]
+      );
+      const request = reqRows[0];
+      if (!request) throw httpError(404, 'Solicitud no encontrada');
+      if (request.status !== 'pending') throw httpError(409, 'La solicitud ya fue resuelta');
+
+      if (action === 'reject') {
+        await client.query(
+          `UPDATE ally_point_ledger
+           SET status = 'rejected', resolved_by = $1, resolved_at = now(), notes = COALESCE($2, notes)
+           WHERE id = $3`,
+          [req.user.id, notes || null, request_id]
+        );
+        await audit(client, req.user, 'ally.redeem.reject', 'ally_point_ledger', request_id, { ally_id: allyId });
+        await client.query('COMMIT');
+        return res.json({ data: { status: 'rejected' }, error: null });
+      }
+
+      const redeemPts = Number(request.points);
+      if (!(redeemPts > 0)) throw httpError(400, 'Puntos de solicitud inválidos');
+      if (Number(ally.ally_points) < redeemPts) {
+        throw httpError(409, 'Saldo insuficiente para aprobar el canje');
+      }
+      await client.query(
+        'UPDATE worker_profiles SET ally_points = ally_points - $1 WHERE id = $2',
+        [redeemPts, allyId]
+      );
+      await client.query(
+        `UPDATE ally_point_ledger
+         SET status = 'posted', resolved_by = $1, resolved_at = now(), notes = COALESCE($2, notes)
+         WHERE id = $3`,
+        [req.user.id, notes || request.notes, request_id]
+      );
+      const { rows: redeemRows } = await client.query(
+        `INSERT INTO ally_point_ledger
+          (ally_id, kind, points, notes, status, created_by, resolved_by, resolved_at)
+         VALUES ($1, 'redeem', $2, $3, 'posted', $4, $4, now())
+         RETURNING *`,
+        [allyId, -redeemPts, notes || request.notes || 'Canje aprobado', req.user.id]
+      );
+      await audit(client, req.user, 'ally.redeem.approve', 'ally_point_ledger', redeemRows[0].id, {
+        ally_id: allyId,
+        points: redeemPts,
+      });
+      await client.query('COMMIT');
+      return res.json({ data: redeemRows[0], error: null });
+    }
+
+    // Canje directo por admin
+    const redeemPts = Number(points);
+    if (!(redeemPts > 0)) throw httpError(400, 'points debe ser > 0');
+    if (Number(ally.ally_points) < redeemPts) {
+      throw httpError(409, 'Saldo insuficiente');
+    }
+    await client.query(
+      'UPDATE worker_profiles SET ally_points = ally_points - $1 WHERE id = $2',
+      [redeemPts, allyId]
+    );
+    const { rows: redeemRows } = await client.query(
+      `INSERT INTO ally_point_ledger
+        (ally_id, kind, points, notes, status, created_by, resolved_by, resolved_at)
+       VALUES ($1, 'redeem', $2, $3, 'posted', $4, $4, now())
+       RETURNING *`,
+      [allyId, -redeemPts, notes || 'Canje registrado por admin', req.user.id]
+    );
+    await audit(client, req.user, 'ally.redeem.direct', 'ally_point_ledger', redeemRows[0].id, {
+      ally_id: allyId,
+      points: redeemPts,
+    });
+    await client.query('COMMIT');
+    res.json({ data: redeemRows[0], error: null });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(e);
+    res.status(e.httpStatus || 500).json({ data: null, error: { message: String(e.message || e) } });
+  } finally {
+    client.release();
+  }
+});
+
+app.get('/ally/me', requireAuth, requireAlly, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, first_name, last_name, document_id, email, phone, promo_code, ally_points, is_active, created_at
+       FROM worker_profiles WHERE id = $1`,
+      [req.user.id]
+    );
+    if (!rows[0]) return res.status(404).json({ error: 'Perfil no encontrado' });
+    res.json({ data: rows[0], error: null });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ data: null, error: { message: String(e.message || e) } });
+  }
+});
+
+app.get('/ally/stats', requireAuth, requireAlly, async (req, res) => {
+  try {
+    const from = req.query.from ? String(req.query.from) : null;
+    const to = req.query.to ? String(req.query.to) : null;
+    const params = [req.user.id];
+    let dateFilter = '';
+    if (from) {
+      params.push(from);
+      dateFilter += ` AND created_at >= $${params.length}::timestamptz`;
+    }
+    if (to) {
+      params.push(to);
+      dateFilter += ` AND created_at < $${params.length}::timestamptz`;
+    }
+    const { rows } = await pool.query(
+      `SELECT
+         COALESCE(SUM(CASE WHEN kind = 'earn' AND status = 'posted' THEN points ELSE 0 END), 0)::int AS earned,
+         COALESCE(SUM(CASE WHEN kind = 'redeem' AND status = 'posted' THEN ABS(points) ELSE 0 END), 0)::int AS redeemed,
+         COALESCE(SUM(CASE WHEN kind = 'void_reversal' AND status = 'posted' THEN points ELSE 0 END), 0)::int AS reversed
+       FROM ally_point_ledger
+       WHERE ally_id = $1 ${dateFilter}`,
+      params
+    );
+    const earned = Number(rows[0]?.earned || 0);
+    const redeemed = Number(rows[0]?.redeemed || 0);
+    const reversed = Number(rows[0]?.reversed || 0);
+    res.json({
+      data: {
+        earned,
+        redeemed,
+        reversed,
+        net: earned + reversed - redeemed,
+        from,
+        to,
+      },
+      error: null,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ data: null, error: { message: String(e.message || e) } });
+  }
+});
+
+app.get('/ally/ledger', requireAuth, requireAlly, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, kind, points, sale_id, notes, status, resolved_at, created_at
+       FROM ally_point_ledger
+       WHERE ally_id = $1
+       ORDER BY created_at DESC
+       LIMIT 100`,
+      [req.user.id]
+    );
+    res.json({ data: rows, error: null });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ data: null, error: { message: String(e.message || e) } });
+  }
+});
+
+app.post('/ally/redeem-requests', requireAuth, requireAlly, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const points = Number(req.body?.points);
+    const notes = String(req.body?.notes || '').trim() || null;
+    if (!(points > 0) || !Number.isInteger(points)) {
+      return res.status(400).json({ error: 'points debe ser un entero > 0' });
+    }
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      'SELECT ally_points FROM worker_profiles WHERE id = $1 AND role = $2 FOR UPDATE',
+      [req.user.id, 'ally']
+    );
+    if (!rows[0]) throw httpError(404, 'Perfil no encontrado');
+    if (Number(rows[0].ally_points) < points) {
+      throw httpError(409, 'Saldo insuficiente');
+    }
+    const { rows: pending } = await client.query(
+      `SELECT COALESCE(SUM(points), 0)::int AS pending_pts
+       FROM ally_point_ledger
+       WHERE ally_id = $1 AND kind = 'redeem_request' AND status = 'pending'`,
+      [req.user.id]
+    );
+    const pendingPts = Number(pending[0]?.pending_pts || 0);
+    if (Number(rows[0].ally_points) - pendingPts < points) {
+      throw httpError(409, 'Ya tienes solicitudes pendientes que cubren tu saldo');
+    }
+    const { rows: inserted } = await client.query(
+      `INSERT INTO ally_point_ledger
+        (ally_id, kind, points, notes, status, created_by)
+       VALUES ($1, 'redeem_request', $2, $3, 'pending', $1)
+       RETURNING *`,
+      [req.user.id, points, notes]
+    );
+    await audit(client, req.user, 'ally.redeem.request', 'ally_point_ledger', inserted[0].id, {
+      points,
+    });
+    await client.query('COMMIT');
+    res.json({ data: inserted[0], error: null });
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error(e);
@@ -644,9 +1154,17 @@ app.post('/db', requireAuth, async (req, res) => {
     if (!rule) {
       return res.status(403).json({ error: 'Tabla no permitida' });
     }
+
+    // Aliados: solo lectura de su propio perfil vía /db; el resto usa endpoints /ally/*
+    if (req.user.role === 'ally') {
+      if (table !== 'worker_profiles' || action !== 'select') {
+        return res.status(403).json({ error: 'Acceso restringido para aliados' });
+      }
+    }
+
     checkAccess(rule, action, req.user.role);
 
-    // Sellers solo pueden verse a sí mismos en worker_profiles
+    // Sellers/aliados solo pueden verse a sí mismos en worker_profiles
     if (table === 'worker_profiles' && req.user.role !== 'admin') {
       filters = [...filters, { op: 'eq', col: 'id', val: req.user.id }];
     }

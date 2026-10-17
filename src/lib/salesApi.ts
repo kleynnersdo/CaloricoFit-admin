@@ -28,6 +28,7 @@ export async function checkoutSale(payload: {
     unit_price_usd: number;
     subtotal_usd: number;
   }>;
+  promo_code?: string | null;
 }): Promise<ApiResult<Record<string, unknown>>> {
   const res = await fetch(`${getApiBase()}/sales/checkout`, {
     method: 'POST',

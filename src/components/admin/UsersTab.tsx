@@ -22,7 +22,7 @@ export default function UsersTab({ showToast }: UsersTabProps) {
 
   const fetchWorkers = async () => {
     const { data } = await api.from('worker_profiles').select('*');
-    if (data) setWorkers(data);
+    if (data) setWorkers(data.filter((w: { role?: string }) => w.role !== 'ally'));
   };
 
   const handleSaveWorker = async () => {

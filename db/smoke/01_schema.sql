@@ -26,11 +26,17 @@ CREATE TABLE IF NOT EXISTS public.worker_profiles (
     document_id TEXT,
     email TEXT,
     phone TEXT,
-    role TEXT NOT NULL CHECK (role IN ('admin', 'seller')),
+    role TEXT NOT NULL CHECK (role IN ('admin', 'seller', 'ally')),
+    promo_code TEXT,
+    ally_points INTEGER NOT NULL DEFAULT 0,
     password TEXT DEFAULT 'Calorico123*2026',
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS worker_profiles_promo_code_uidx
+  ON public.worker_profiles (promo_code)
+  WHERE promo_code IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS public.settings (
     id TEXT PRIMARY KEY,
@@ -54,6 +60,7 @@ CREATE TABLE IF NOT EXISTS public.products (
     wholesale_price NUMERIC(10,2) NOT NULL DEFAULT 0,
     min_wholesale_qty INTEGER NOT NULL DEFAULT 0,
     stock_quantity INTEGER NOT NULL DEFAULT 0,
+    ally_points_per_unit INTEGER NOT NULL DEFAULT 0,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
@@ -93,9 +100,33 @@ CREATE TABLE IF NOT EXISTS public.sales (
     points_earned INTEGER DEFAULT 0,
     points_redeemed INTEGER DEFAULT 0,
     is_wholesale BOOLEAN DEFAULT false,
+    ally_id UUID REFERENCES public.worker_profiles(id),
+    ally_promo_code TEXT,
+    ally_points_earned INTEGER NOT NULL DEFAULT 0,
     status TEXT DEFAULT 'COMPLETED' CHECK (status IN ('COMPLETED', 'VOIDED')),
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS sales_ally_id_idx ON public.sales (ally_id);
+
+CREATE TABLE IF NOT EXISTS public.ally_point_ledger (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    ally_id UUID NOT NULL REFERENCES public.worker_profiles(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('earn', 'void_reversal', 'redeem_request', 'redeem', 'adjust')),
+    points INTEGER NOT NULL,
+    sale_id UUID REFERENCES public.sales(id) ON DELETE SET NULL,
+    notes TEXT,
+    status TEXT NOT NULL DEFAULT 'posted'
+      CHECK (status IN ('posted', 'pending', 'rejected', 'cancelled')),
+    created_by UUID REFERENCES public.worker_profiles(id) ON DELETE SET NULL,
+    resolved_by UUID REFERENCES public.worker_profiles(id) ON DELETE SET NULL,
+    resolved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS ally_point_ledger_ally_id_idx ON public.ally_point_ledger (ally_id);
+CREATE INDEX IF NOT EXISTS ally_point_ledger_status_idx ON public.ally_point_ledger (status);
+CREATE INDEX IF NOT EXISTS ally_point_ledger_created_at_idx ON public.ally_point_ledger (created_at);
 
 CREATE TABLE IF NOT EXISTS public.sale_items (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

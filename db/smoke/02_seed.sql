@@ -50,17 +50,36 @@ VALUES (
 )
 ON CONFLICT (id) DO NOTHING;
 
+INSERT INTO auth.users (id, email, raw_user_meta_data)
+VALUES (
+  '33333333-3333-3333-3333-333333333333',
+  'aliado@caloricofit.com',
+  '{"first_name":"Aliado","last_name":"Demo","role":"ally","document_id":"V22222222"}'::jsonb
+)
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO public.worker_profiles (id, first_name, last_name, document_id, email, role, promo_code, ally_points, is_active, password)
+VALUES (
+  '33333333-3333-3333-3333-333333333333',
+  'Aliado', 'Demo', 'V22222222', 'aliado@caloricofit.com', 'ally', 'ALIADO1', 0, true, crypt('Calorico123*2026', gen_salt('bf'))
+)
+ON CONFLICT (id) DO NOTHING;
+
 UPDATE public.worker_profiles
 SET password = crypt('Calorico123*2026', gen_salt('bf'))
-WHERE email IN ('admin@caloricofit.com', 'vendedor@caloricofit.com')
+WHERE email IN ('admin@caloricofit.com', 'vendedor@caloricofit.com', 'aliado@caloricofit.com')
   AND password NOT LIKE '$2%';
 
-INSERT INTO public.products (name, category, sku, barcode, cost_price, sale_price, stock_quantity, is_active)
+INSERT INTO public.products (name, category, sku, barcode, cost_price, sale_price, stock_quantity, ally_points_per_unit, is_active)
 VALUES
-('Whey Protein 2lb', 'Proteínas', 'WP-001', '7501000000011', 18.00, 32.00, 25, true),
-('Creatina 300g', 'Creatina', 'CR-001', '7501000000028', 8.00, 15.00, 40, true),
-('Shaker 600ml', 'Accesorios', 'SH-001', '7501000000035', 2.50, 6.00, 50, true)
+('Whey Protein 2lb', 'Proteínas', 'WP-001', '7501000000011', 18.00, 32.00, 25, 10, true),
+('Creatina 300g', 'Creatina', 'CR-001', '7501000000028', 8.00, 15.00, 40, 5, true),
+('Shaker 600ml', 'Accesorios', 'SH-001', '7501000000035', 2.50, 6.00, 50, 2, true)
 ON CONFLICT DO NOTHING;
+
+UPDATE public.products SET ally_points_per_unit = 10 WHERE sku = 'WP-001' AND COALESCE(ally_points_per_unit, 0) = 0;
+UPDATE public.products SET ally_points_per_unit = 5 WHERE sku = 'CR-001' AND COALESCE(ally_points_per_unit, 0) = 0;
+UPDATE public.products SET ally_points_per_unit = 2 WHERE sku = 'SH-001' AND COALESCE(ally_points_per_unit, 0) = 0;
 
 INSERT INTO public.customers (document_id, first_name, last_name, phone, city, loyalty_points)
 VALUES

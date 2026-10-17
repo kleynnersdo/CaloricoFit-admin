@@ -27,7 +27,8 @@ Sin Supabase en runtime. DDL legado Supabase en `docs/archive/supabase_schema.sq
 
 - Login: `POST /auth/login` (cédula o email + password).
 - Sesión: token en `localStorage`, `Authorization: Bearer` en requests.
-- Roles en `worker_profiles`: `admin` | `seller`.
+- Roles en `worker_profiles`: `admin` | `seller` | `ally`.
+- Aliados: código promocional corto, puntos por producto referido (separados de fidelidad del cliente). Panel propio + pestaña Alianzas en admin.
 
 ## Endpoints clave
 
@@ -35,8 +36,12 @@ Sin Supabase en runtime. DDL legado Supabase en `docs/archive/supabase_schema.sq
 |--------|------|-----|
 | POST | `/auth/login` | Login |
 | POST | `/db` | CRUD genérico (ventas insert bloqueado) |
-| POST | `/sales/checkout` | Cobro transaccional |
-| POST | `/sales/:id/void` | Anulación (admin) |
+| POST | `/sales/checkout` | Cobro transaccional (+ `promo_code` opcional) |
+| POST | `/sales/:id/void` | Anulación (admin; revierte puntos aliado) |
+| GET | `/promo/lookup` | Validar código de aliado (POS) |
+| GET | `/allies` | Listar/buscar aliados (admin) |
+| POST | `/allies/:id/redeems` | Canje / aprobar solicitud (admin) |
+| GET/POST | `/ally/*` | Panel del aliado (me, stats, ledger, solicitudes) |
 | POST | `/admin/purge` | Borrado histórico auditado |
 | GET | `/public/bcv/oficial` | Tasa BCV proxy |
 
