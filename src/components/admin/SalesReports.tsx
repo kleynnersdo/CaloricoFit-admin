@@ -4,6 +4,7 @@ import { errorMessage } from '../../lib/apiError';
 import { Ban, Bell, Trash2 } from 'lucide-react';
 import Modal from '../ui/Modal';
 import ConfirmModal from '../ui/ConfirmModal';
+import Pagination, { pageSlice } from '../ui/Pagination';
 
 interface SalesReportsProps {
   salesList: any[];
@@ -19,6 +20,7 @@ export default function SalesReports({ salesList, metricFilter, showToast, onRef
   const [clearSalesPeriod, setClearSalesPeriod] = useState<'TODAY' | 'THIS_WEEK' | 'THIS_MONTH' | 'LAST_3_MONTHS' | 'LAST_6_MONTHS' | 'ALL'>('THIS_WEEK');
   const [saleToVoid, setSaleToVoid] = useState<any>(null);
   const [isVoidSaleModalOpen, setIsVoidSaleModalOpen] = useState(false);
+  const [page, setPage] = useState(0);
 
   const handleClearSalesClick = () => {
     if (salesList.length === 0) {
@@ -89,9 +91,9 @@ export default function SalesReports({ salesList, metricFilter, showToast, onRef
   return (
     <>
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
-          <span className="font-bold">Lista de Ventas ({metricFilter})</span>
-          <button onClick={handleClearSalesClick} className="text-red-500 hover:text-red-700 text-sm flex items-center gap-1">
+        <div className="p-4 border-b border-gray-200 bg-gray-50 flex flex-wrap justify-between items-center gap-2">
+          <span className="font-bold text-sm sm:text-base">Lista de Ventas ({metricFilter})</span>
+          <button onClick={handleClearSalesClick} className="shrink-0 text-red-500 hover:text-red-700 text-sm flex items-center gap-1">
             <Trash2 className="w-4 h-4"/> Limpiar Ventas
           </button>
         </div>
@@ -109,12 +111,12 @@ export default function SalesReports({ salesList, metricFilter, showToast, onRef
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {salesList.map(s => {
+              {pageSlice(salesList, page).map(s => {
                 const isVoided = s.status === 'VOIDED';
                 const profit = Number(s.total_usd || 0) - Number(s.cost_usd || 0);
                 return (
                   <tr key={s.id} className={`hover:bg-gray-50 transition-colors ${isVoided ? 'opacity-50' : ''}`}>
-                    <td className="p-3 text-gray-600">{new Date(s.created_at).toLocaleString()}</td>
+                    <td className="p-3 text-gray-600 whitespace-nowrap">{new Date(s.created_at).toLocaleString('es-VE')}</td>
                     <td className="p-3 font-medium text-gray-900">{s.worker_profiles?.first_name} {s.worker_profiles?.last_name}</td>
                     <td className="p-3 text-gray-600">{s.payment_method || 'CASH_USD'}{s.is_wholesale ? ' · Mayor' : ''}</td>
                     <td className="p-3 text-gray-500">${Number(s.cost_usd || 0).toFixed(2)}</td>
@@ -136,6 +138,9 @@ export default function SalesReports({ salesList, metricFilter, showToast, onRef
               {salesList.length === 0 && <tr><td colSpan={7} className="p-4 text-center text-gray-500">No hay ventas registradas.</td></tr>}
             </tbody>
           </table>
+        </div>
+        <div className="px-4 pb-3">
+          <Pagination page={page} total={salesList.length} onChange={setPage} />
         </div>
       </div>
 

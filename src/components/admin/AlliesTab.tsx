@@ -3,6 +3,7 @@ import { api } from '../../lib/apiClient';
 import {
   allyKindLabel,
   allyStatusLabel,
+  deleteAlly,
   listAllies,
   listAllyLedger,
   listRedeemRequests,
@@ -11,8 +12,10 @@ import {
   type AllyLedgerRow,
   type AllyProfile,
 } from '../../lib/alliesApi';
-import { Check, Pencil, Plus, Search, X } from 'lucide-react';
+import { Check, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import Modal from '../ui/Modal';
+import ConfirmModal from '../ui/ConfirmModal';
+import Pagination, { pageSlice } from '../ui/Pagination';
 
 interface AlliesTabProps {
   showToast: (msg: string) => void;
@@ -27,6 +30,10 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isRedeemOpen, setIsRedeemOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const [allyToDelete, setAllyToDelete] = useState<AllyProfile | null>(null);
+  const [allyConfirm, setAllyConfirm] = useState<{ kind: 'edit' | 'toggle' | 'redeem'; ally: AllyProfile } | null>(null);
+  const [page, setPage] = useState(0);
+  const [ledgerPage, setLedgerPage] = useState(0);
   const [createdCode, setCreatedCode] = useState<string | null>(null);
   const [form, setForm] = useState({
     first_name: '',
@@ -61,8 +68,27 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
 
   const openDetail = async (ally: AllyProfile) => {
     setSelected(ally);
+    setLedgerPage(0);
     const { data } = await listAllyLedger(ally.id);
     setLedger(data || []);
+  };
+
+  const handleDeleteAlly = async () => {
+    if (!allyToDelete) return;
+    setBusy(true);
+    const { error } = await deleteAlly(allyToDelete.id);
+    setBusy(false);
+    if (error) {
+      showToast(error.message);
+      return;
+    }
+    showToast(`Aliado ${allyToDelete.first_name} eliminado.`);
+    if (selected?.id === allyToDelete.id) {
+      setSelected(null);
+      setLedger([]);
+    }
+    setAllyToDelete(null);
+    refresh(query);
   };
 
   const handleCreate = async () => {
@@ -201,9 +227,9 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
 
   return (
     <>
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900">Alianzas</h2>
+          <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Alianzas</h2>
           <p className="text-sm text-gray-500">Entrenadores y tiendas con código promocional</p>
         </div>
         <button
@@ -212,7 +238,7 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
             setCreatedCode(null);
             setIsCreateOpen(true);
           }}
-          className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2"
+          className="w-full sm:w-auto justify-center bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2"
         >
           <Plus className="w-5 h-5" /> Nuevo aliado
         </button>
@@ -280,7 +306,10 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
         </div>
         <button
           type="button"
-          onClick={() => refresh(query)}
+          onClick={() => {
+            setPage(0);
+            refresh(query);
+          }}
           className="px-4 py-2 bg-gray-900 text-white rounded-lg font-medium"
         >
           Buscar
@@ -289,7 +318,7 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="space-y-3">
-          {allies.map((a) => (
+          {pageSlice(allies, page).map((a) => (
             <button
               key={a.id}
               type="button"
@@ -317,6 +346,7 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
           {allies.length === 0 && (
             <p className="text-gray-500 text-sm">No hay aliados. Crea el primero.</p>
           )}
+          <Pagination page={page} total={allies.length} onChange={setPage} />
         </div>
 
         <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm min-h-[280px]">
@@ -324,7 +354,7 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
             <p className="text-gray-400 text-sm">Selecciona un aliado para ver detalle y canjes.</p>
           ) : (
             <>
-              <div className="flex justify-between items-start mb-4">
+              <div className="flex flex-col gap-3 mb-4">
                 <div>
                   <h3 className="text-xl font-bold">
                     {selected.first_name} {selected.last_name}
@@ -334,45 +364,40 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
                     Saldo: <b>{selected.ally_points}</b> puntos
                   </p>
                 </div>
-                <div className="flex flex-col gap-2">
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => openEdit(selected)}
+                    onClick={() => setAllyConfirm({ kind: 'edit', ally: selected })}
                     className="bg-gray-900 hover:bg-black text-white px-3 py-1.5 rounded text-sm font-bold flex items-center justify-center gap-1.5"
                   >
                     <Pencil className="w-3.5 h-3.5" /> Editar
                   </button>
                   <button
                     type="button"
-                    onClick={() => setIsRedeemOpen(true)}
+                    onClick={() => setAllyConfirm({ kind: 'redeem', ally: selected })}
                     className="bg-orange-500 hover:bg-orange-600 text-white px-3 py-1.5 rounded text-sm font-bold"
                   >
-                    Registrar canje
+                    Canje
                   </button>
                   <button
                     type="button"
-                    onClick={async () => {
-                      const next = selected.is_active === false;
-                      const { error } = await api
-                        .from('worker_profiles')
-                        .update({ is_active: next })
-                        .eq('id', selected.id);
-                      if (error) showToast(error.message);
-                      else {
-                        showToast(next ? 'Aliado habilitado.' : 'Aliado inhabilitado.');
-                        refresh(query);
-                        setSelected({ ...selected, is_active: next });
-                      }
-                    }}
+                    onClick={() => setAllyConfirm({ kind: 'toggle', ally: selected })}
                     className="text-xs px-3 py-1.5 rounded font-bold bg-gray-100 hover:bg-gray-200"
                   >
                     {selected.is_active === false ? 'Habilitar' : 'Inhabilitar'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAllyToDelete(selected)}
+                    className="text-xs px-3 py-1.5 rounded font-bold bg-red-50 text-red-700 hover:bg-red-100 flex items-center justify-center gap-1"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" /> Eliminar
                   </button>
                 </div>
               </div>
               <h4 className="font-bold text-sm text-gray-700 mb-2">Historial reciente</h4>
               <div className="space-y-2 max-h-80 overflow-y-auto">
-                {ledger.map((row) => (
+                {pageSlice(ledger, ledgerPage).map((row) => (
                   <div key={row.id} className="text-sm border-b border-gray-50 py-2 flex justify-between gap-2">
                     <div>
                       <span className="font-medium">{allyKindLabel(row.kind)}</span>
@@ -392,10 +417,97 @@ export default function AlliesTab({ showToast }: AlliesTabProps) {
                 ))}
                 {ledger.length === 0 && <p className="text-gray-400 text-sm">Sin movimientos.</p>}
               </div>
+              <Pagination page={ledgerPage} total={ledger.length} onChange={setLedgerPage} />
             </>
           )}
         </div>
       </div>
+
+      {allyToDelete && (
+        <ConfirmModal
+          title="Eliminar aliado"
+          confirmLabel={busy ? 'Eliminando…' : 'Sí, eliminar'}
+          onCancel={() => setAllyToDelete(null)}
+          onConfirm={() => void handleDeleteAlly()}
+        >
+          <p className="text-sm text-gray-600">
+            Vas a eliminar a{' '}
+            <b>
+              {allyToDelete.first_name} {allyToDelete.last_name}
+            </b>{' '}
+            (código <span className="font-mono">{allyToDelete.promo_code}</span>). Se borra su
+            cuenta y el historial de puntos; las ventas pasadas se conservan sin atribución.
+          </p>
+        </ConfirmModal>
+      )}
+
+      {allyConfirm && (
+        <ConfirmModal
+          variant="plain"
+          tone="primary"
+          title={
+            allyConfirm.kind === 'edit'
+              ? 'Editar aliado'
+              : allyConfirm.kind === 'redeem'
+                ? 'Registrar canje'
+                : allyConfirm.ally.is_active === false
+                  ? 'Habilitar aliado'
+                  : 'Inhabilitar aliado'
+          }
+          confirmLabel={
+            allyConfirm.kind === 'edit'
+              ? 'Sí, editar'
+              : allyConfirm.kind === 'redeem'
+                ? 'Continuar'
+                : allyConfirm.ally.is_active === false
+                  ? 'Sí, habilitar'
+                  : 'Sí, inhabilitar'
+          }
+          onCancel={() => setAllyConfirm(null)}
+          onConfirm={() => {
+            const ally = allyConfirm.ally;
+            if (allyConfirm.kind === 'edit') {
+              setAllyConfirm(null);
+              openEdit(ally);
+              return;
+            }
+            if (allyConfirm.kind === 'redeem') {
+              setAllyConfirm(null);
+              setIsRedeemOpen(true);
+              return;
+            }
+            void (async () => {
+              const next = ally.is_active === false;
+              const { error } = await api
+                .from('worker_profiles')
+                .update({ is_active: next })
+                .eq('id', ally.id);
+              setAllyConfirm(null);
+              if (error) showToast(error.message);
+              else {
+                showToast(next ? 'Aliado habilitado.' : 'Aliado inhabilitado.');
+                refresh(query);
+                if (selected?.id === ally.id) setSelected({ ...ally, is_active: next });
+              }
+            })();
+          }}
+        >
+          <p className="text-sm text-gray-600">
+            {allyConfirm.kind === 'edit' && (
+              <>¿Abrir la edición de <b>{allyConfirm.ally.first_name} {allyConfirm.ally.last_name}</b>?</>
+            )}
+            {allyConfirm.kind === 'redeem' && (
+              <>¿Registrar un canje de puntos para <b>{allyConfirm.ally.first_name} {allyConfirm.ally.last_name}</b>?</>
+            )}
+            {allyConfirm.kind === 'toggle' && allyConfirm.ally.is_active === false && (
+              <>¿Habilitar de nuevo a <b>{allyConfirm.ally.first_name} {allyConfirm.ally.last_name}</b>?</>
+            )}
+            {allyConfirm.kind === 'toggle' && allyConfirm.ally.is_active !== false && (
+              <>¿Inhabilitar a <b>{allyConfirm.ally.first_name} {allyConfirm.ally.last_name}</b>?</>
+            )}
+          </p>
+        </ConfirmModal>
+      )}
 
       {isCreateOpen && (
         <Modal title="Nuevo aliado" onClose={() => setIsCreateOpen(false)}>

@@ -17,10 +17,10 @@ interface StatCardProps {
 }
 
 // Tarjeta de métrica del dashboard (borde lateral de color + cifra grande).
-export default function StatCard({ label, value, accent = 'blue', valueClassName = 'text-3xl font-bold text-gray-900' }: StatCardProps) {
+export default function StatCard({ label, value, accent = 'blue', valueClassName = 'text-2xl sm:text-3xl font-bold text-gray-900' }: StatCardProps) {
   return (
-    <div className={`bg-white p-6 rounded-xl border border-gray-200 shadow-sm border-l-4 ${ACCENTS[accent]}`}>
-      <div className="text-sm font-bold tracking-wider text-gray-500 mb-1 uppercase">{label}</div>
+    <div className={`bg-white p-3 sm:p-6 rounded-xl border border-gray-200 shadow-sm border-l-4 ${ACCENTS[accent]}`}>
+      <div className="text-[10px] sm:text-sm font-bold tracking-wider text-gray-500 mb-1 uppercase leading-tight">{label}</div>
       <div className={valueClassName}>{value}</div>
     </div>
   );

@@ -9,7 +9,11 @@ interface TablePartProps {
 }
 
 export function Table({ children, className = '' }: TablePartProps) {
-  return <table className={`w-full text-left ${className}`}>{children}</table>;
+  return (
+    <div className="overflow-x-auto">
+      <table className={`w-full text-left min-w-[40rem] ${className}`}>{children}</table>
+    </div>
+  );
 }
 
 export function TableHeader({ children, className = '' }: TablePartProps) {

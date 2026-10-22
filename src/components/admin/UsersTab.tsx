@@ -2,10 +2,17 @@ import { useEffect, useState } from 'react';
 import { api } from '../../lib/apiClient';
 import { Edit, Eye, EyeOff, Plus, Trash2 } from 'lucide-react';
 import Modal from '../ui/Modal';
+import ConfirmModal from '../ui/ConfirmModal';
+import Pagination, { pageSlice } from '../ui/Pagination';
 
 interface UsersTabProps {
   showToast: (msg: string) => void;
 }
+
+type WorkerConfirm =
+  | { kind: 'delete'; worker: any }
+  | { kind: 'edit'; worker: any }
+  | { kind: 'toggle'; worker: any };
 
 // Gestión de Vendedores: alta vía auth (cédula como correo virtual),
 // edición, inhabilitación y eliminación de perfiles.
@@ -15,6 +22,8 @@ export default function UsersTab({ showToast }: UsersTabProps) {
   const [workerForm, setWorkerForm] = useState<any>({ email: '', password: '', first_name: '', last_name: '', document_id: '', phone: '', role: 'seller' });
   const [showWorkerPassword, setShowWorkerPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [page, setPage] = useState(0);
+  const [confirmAction, setConfirmAction] = useState<WorkerConfirm | null>(null);
 
   useEffect(() => {
     fetchWorkers();
@@ -127,69 +136,86 @@ export default function UsersTab({ showToast }: UsersTabProps) {
      fetchWorkers();
   };
 
-  const handleDeleteWorker = async (id: string) => {
-    await api.from('worker_profiles').delete().eq('id', id);
-    showToast("Perfil de vendedor eliminado.");
+  const openEditWorker = (w: any) => {
+    setWorkerForm({
+      document_id: w.document_id || '',
+      password: '',
+      first_name: w.first_name,
+      last_name: w.last_name,
+      phone: w.phone || '',
+      role: w.role,
+      id: w.id,
+      email: w.email || '',
+    });
+    setShowWorkerPassword(false);
+    setIsWorkerModalOpen(true);
+  };
+
+  const handleConfirmWorkerAction = async () => {
+    if (!confirmAction) return;
+    const w = confirmAction.worker;
+    if (confirmAction.kind === 'edit') {
+      setConfirmAction(null);
+      openEditWorker(w);
+      return;
+    }
+    if (confirmAction.kind === 'toggle') {
+      const newStatus = w.is_active === false;
+      const { error } = await api.from('worker_profiles').update({ is_active: newStatus }).eq('id', w.id);
+      setConfirmAction(null);
+      if (error) showToast('Error: ' + error.message);
+      else {
+        showToast(newStatus ? 'Vendedor habilitado.' : 'Vendedor inhabilitado.');
+        fetchWorkers();
+      }
+      return;
+    }
+    await api.from('worker_profiles').delete().eq('id', w.id);
+    setConfirmAction(null);
+    showToast('Perfil de vendedor eliminado.');
     fetchWorkers();
   };
 
   return (
     <>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Gestión de Vendedores</h2>
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-6">
+        <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Gestión de Vendedores</h2>
         <button
           onClick={() => { setWorkerForm({ email: '', password: '', first_name: '', last_name: '', document_id: '', phone: '', role: 'seller' }); setShowWorkerPassword(false); setIsWorkerModalOpen(true); }}
-          className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2"
+          className="w-full sm:w-auto justify-center bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2"
         >
           <Plus className="w-5 h-5"/> Agregar Vendedor
         </button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {workers.map(w => (
+        {pageSlice(workers, page).map(w => (
           <div key={w.id} className={`bg-white border ${w.is_active === false ? 'border-red-200 bg-red-50' : 'border-gray-200'} rounded-xl p-6 shadow-sm relative`}>
               {w.is_active === false && <div className="absolute top-0 right-0 bg-red-500 text-white text-xs px-2 py-1 rounded-bl-lg rounded-tr-lg font-bold">INACTIVO</div>}
-              <div className="flex justify-between items-start mb-4">
-                <div>
-                  <h3 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+              <div className="flex flex-wrap justify-between items-start gap-3 mb-4">
+                <div className="min-w-0">
+                  <h3 className="text-lg font-bold text-gray-900 flex flex-wrap items-center gap-2">
                     {w.first_name} {w.last_name}
                     {w.role === 'admin' && <span className="bg-black text-white text-xs px-2 py-0.5 rounded uppercase">Admin</span>}
                   </h3>
                   <div className="text-sm text-gray-500 font-mono mt-1">V-{w.document_id || 'N/A'}</div>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2 shrink-0">
                   <button
-                    onClick={async () => {
-                      const newStatus = w.is_active === false ? true : false;
-                      const { error } = await api.from('worker_profiles').update({ is_active: newStatus }).eq('id', w.id);
-                      if(error) showToast("Error: " + error.message); else fetchWorkers();
-                    }}
+                    onClick={() => setConfirmAction({ kind: 'toggle', worker: w })}
                     className={`text-xs px-3 py-1 rounded font-bold ${w.is_active === false ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-orange-100 text-orange-700 hover:bg-orange-200'}`}
                     title={w.is_active === false ? 'Habilitar' : 'Inhabilitar'}
                   >
                     {w.is_active === false ? 'Habilitar' : 'Inhabilitar'}
                   </button>
                   <button
-                    onClick={() => {
-                      setWorkerForm({
-                          document_id: w.document_id || '',
-                          password: '', // Leave empty to not change
-                          first_name: w.first_name,
-                          last_name: w.last_name,
-                          phone: w.phone || '',
-                          role: w.role
-                        });
-                        // Store ID to know we are editing instead of creating newly
-                        setWorkerForm(prev => ({...prev, id: w.id}));
-                        setShowWorkerPassword(false);
-                        setIsWorkerModalOpen(true);
-                    }}
+                    onClick={() => setConfirmAction({ kind: 'edit', worker: w })}
                     className="text-gray-500 hover:text-blue-600 p-1"
                     title="Editar perfil"
                   >
                     <Edit className="w-4 h-4"/>
                   </button>
-                  <button onClick={() => handleDeleteWorker(w.id)} className="text-red-500 hover:text-red-700 p-1" title="Eliminar perfil"><Trash2 className="w-4 h-4"/></button>
+                  <button onClick={() => setConfirmAction({ kind: 'delete', worker: w })} className="text-red-500 hover:text-red-700 p-1" title="Eliminar perfil"><Trash2 className="w-4 h-4"/></button>
                 </div>
               </div>
               <div className="text-sm text-gray-600 mb-4 space-y-1">
@@ -200,6 +226,7 @@ export default function UsersTab({ showToast }: UsersTabProps) {
           </div>
         ))}
       </div>
+      <Pagination page={page} total={workers.length} onChange={setPage} />
 
       {/* Modal Worker */}
       {isWorkerModalOpen && (
@@ -251,6 +278,48 @@ export default function UsersTab({ showToast }: UsersTabProps) {
             {isSubmitting ? 'Guardando...' : (workerForm.id ? 'Guardar Cambios' : 'Crear Vendedor')}
           </button>
         </Modal>
+      )}
+
+      {confirmAction && (
+        <ConfirmModal
+          variant="plain"
+          tone={confirmAction.kind === 'delete' ? 'danger' : 'primary'}
+          title={
+            confirmAction.kind === 'delete'
+              ? 'Eliminar vendedor'
+              : confirmAction.kind === 'edit'
+                ? 'Editar vendedor'
+                : confirmAction.worker.is_active === false
+                  ? 'Habilitar vendedor'
+                  : 'Inhabilitar vendedor'
+          }
+          confirmLabel={
+            confirmAction.kind === 'delete'
+              ? 'Sí, eliminar'
+              : confirmAction.kind === 'edit'
+                ? 'Sí, editar'
+                : confirmAction.worker.is_active === false
+                  ? 'Sí, habilitar'
+                  : 'Sí, inhabilitar'
+          }
+          onCancel={() => setConfirmAction(null)}
+          onConfirm={() => void handleConfirmWorkerAction()}
+        >
+          <p className="text-sm text-gray-600">
+            {confirmAction.kind === 'delete' && (
+              <>¿Eliminar el perfil de <b>{confirmAction.worker.first_name} {confirmAction.worker.last_name}</b>? Esta acción no se puede deshacer.</>
+            )}
+            {confirmAction.kind === 'edit' && (
+              <>¿Abrir la edición de <b>{confirmAction.worker.first_name} {confirmAction.worker.last_name}</b>?</>
+            )}
+            {confirmAction.kind === 'toggle' && confirmAction.worker.is_active === false && (
+              <>¿Habilitar de nuevo a <b>{confirmAction.worker.first_name} {confirmAction.worker.last_name}</b>?</>
+            )}
+            {confirmAction.kind === 'toggle' && confirmAction.worker.is_active !== false && (
+              <>¿Inhabilitar a <b>{confirmAction.worker.first_name} {confirmAction.worker.last_name}</b>? No podrá iniciar sesión en el POS.</>
+            )}
+          </p>
+        </ConfirmModal>
       )}
     </>
   );

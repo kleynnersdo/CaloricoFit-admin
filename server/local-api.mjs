@@ -614,6 +614,52 @@ app.post('/sales/:id/void', requireAuth, requireAdmin, async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Reposición de stock (atómico: suma/resta sin pisar ventas concurrentes)
+// ---------------------------------------------------------------------------
+app.post('/products/:id/add-stock', requireAuth, requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const productId = req.params.id;
+    const qty = Math.trunc(Number(req.body?.quantity));
+    if (!Number.isFinite(qty) || qty === 0) {
+      throw httpError(400, 'Indica una cantidad distinta de cero');
+    }
+
+    await client.query('BEGIN');
+    const { rows } = await client.query(
+      `UPDATE products
+       SET stock_quantity = stock_quantity + $1
+       WHERE id = $2 AND COALESCE(is_active, true) = true
+         AND stock_quantity + $1 >= 0
+       RETURNING id, name, flavor, cost_price, stock_quantity`,
+      [qty, productId]
+    );
+    const product = rows[0];
+    if (!product) {
+      throw httpError(409, 'No se pudo ajustar el stock (producto inactivo o quedaría negativo)');
+    }
+
+    if (qty > 0) {
+      const label = product.flavor ? `${product.name} (${product.flavor})` : product.name;
+      await client.query(
+        `INSERT INTO expenses (description, amount_usd, category)
+         VALUES ($1, $2, 'inventory_purchase')`,
+        [`Reposición: ${label}`, Number(product.cost_price || 0) * qty]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.json({ data: product, error: null });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(e);
+    res.status(e.httpStatus || 500).json({ data: null, error: { message: String(e.message || e) } });
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Alianzas: lookup de código, panel admin y panel aliado
 // ---------------------------------------------------------------------------
 app.get('/promo/lookup', requireAuth, async (req, res) => {
@@ -741,6 +787,40 @@ app.patch('/allies/:id', requireAuth, requireAdmin, async (req, res) => {
     });
     await client.query('COMMIT');
     res.json({ data: rows[0], error: null });
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error(e);
+    res.status(e.httpStatus || 500).json({ data: null, error: { message: String(e.message || e) } });
+  } finally {
+    client.release();
+  }
+});
+
+app.delete('/allies/:id', requireAuth, requireAdmin, async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const allyId = req.params.id;
+    await client.query('BEGIN');
+    const { rows: allyRows } = await client.query(
+      `SELECT id, first_name, last_name, promo_code, email
+       FROM worker_profiles WHERE id = $1 AND role = 'ally' FOR UPDATE`,
+      [allyId]
+    );
+    if (!allyRows[0]) throw httpError(404, 'Aliado no encontrado');
+
+    // Conservar historial de ventas: solo desvincular atribución
+    await client.query('UPDATE sales SET ally_id = NULL WHERE ally_id = $1', [allyId]);
+    await client.query('DELETE FROM sessions WHERE user_id = $1', [allyId]);
+    await client.query('DELETE FROM worker_profiles WHERE id = $1 AND role = $2', [allyId, 'ally']);
+    await client.query('DELETE FROM auth.users WHERE id = $1', [allyId]);
+
+    await audit(client, req.user, 'ally.delete', 'worker_profiles', allyId, {
+      promo_code: allyRows[0].promo_code,
+      email: allyRows[0].email,
+      name: `${allyRows[0].first_name} ${allyRows[0].last_name}`,
+    });
+    await client.query('COMMIT');
+    res.json({ data: { id: allyId, deleted: true }, error: null });
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error(e);

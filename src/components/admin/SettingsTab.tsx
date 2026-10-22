@@ -4,6 +4,7 @@ import { GLOBAL_CONFIG } from '../../lib/utils';
 import { fetchOfficialBcv, formatBs, resolveBcvRate } from '../../lib/bcv';
 import { AlertTriangle, Edit, Plus, Trash2, X } from 'lucide-react';
 import Modal from '../ui/Modal';
+import ConfirmModal from '../ui/ConfirmModal';
 
 interface SettingsTabProps {
   showToast: (msg: string) => void;
@@ -35,6 +36,7 @@ export default function SettingsTab({ showToast }: SettingsTabProps) {
   const [isSchemaErrorModalOpen, setIsSchemaErrorModalOpen] = useState(false);
   const [schemaErrorSql, setSchemaErrorSql] = useState('');
   const [isSqlCopiado, setIsSqlCopiado] = useState(false);
+  const [pmConfirm, setPmConfirm] = useState<{ kind: 'delete' | 'edit'; pm: any } | null>(null);
 
   useEffect(() => {
     fetchSettings();
@@ -187,10 +189,18 @@ export default function SettingsTab({ showToast }: SettingsTabProps) {
     }
   };
 
-  const handleDeletePaymentMethod = async (id: string) => {
-      await api.from('payment_methods').delete().eq('id', id);
-      showToast("Método de pago eliminado");
-      fetchPaymentMethods();
+  const handleConfirmPaymentMethod = async () => {
+    if (!pmConfirm) return;
+    if (pmConfirm.kind === 'edit') {
+      setPaymentMethodForm(pmConfirm.pm);
+      setPmConfirm(null);
+      setIsPaymentMethodModalOpen(true);
+      return;
+    }
+    await api.from('payment_methods').delete().eq('id', pmConfirm.pm.id);
+    setPmConfirm(null);
+    showToast('Método de pago eliminado');
+    fetchPaymentMethods();
   };
 
   return (
@@ -314,12 +324,12 @@ export default function SettingsTab({ showToast }: SettingsTabProps) {
        </div>
 
        <div className="bg-white p-6 rounded-xl border border-gray-200 shadow-sm lg:col-span-2">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-4">
               <h3 className="text-lg font-bold text-gray-900">Métodos de Pago</h3>
               <button onClick={() => {
                   setPaymentMethodForm({ name: '', currency: 'USD', discount_percentage: 0, surcharge_percentage: 0, is_active: true });
                   setIsPaymentMethodModalOpen(true);
-              }} className="text-sm bg-black text-white px-3 py-1.5 rounded flex items-center gap-1">
+              }} className="shrink-0 text-sm bg-black text-white px-3 py-1.5 rounded flex items-center gap-1">
                   <Plus className="w-4 h-4"/> Añadir
               </button>
           </div>
@@ -338,11 +348,8 @@ export default function SettingsTab({ showToast }: SettingsTabProps) {
                           </div>
                       </div>
                       <div className="flex gap-2">
-                          <button onClick={() => {
-                              setPaymentMethodForm(pm);
-                              setIsPaymentMethodModalOpen(true);
-                          }} className="text-gray-500 hover:text-blue-600 p-1"><Edit className="w-4 h-4"/></button>
-                          <button onClick={() => handleDeletePaymentMethod(pm.id)} className="text-gray-500 hover:text-red-600 p-1"><Trash2 className="w-4 h-4"/></button>
+                          <button onClick={() => setPmConfirm({ kind: 'edit', pm })} className="text-gray-500 hover:text-blue-600 p-1" title="Editar"><Edit className="w-4 h-4"/></button>
+                          <button onClick={() => setPmConfirm({ kind: 'delete', pm })} className="text-gray-500 hover:text-red-600 p-1" title="Eliminar"><Trash2 className="w-4 h-4"/></button>
                       </div>
                   </div>
               ))}
@@ -452,6 +459,25 @@ export default function SettingsTab({ showToast }: SettingsTabProps) {
                </div>
             </div>
          </div>
+      )}
+
+      {pmConfirm && (
+        <ConfirmModal
+          variant="plain"
+          tone={pmConfirm.kind === 'delete' ? 'danger' : 'primary'}
+          title={pmConfirm.kind === 'delete' ? 'Eliminar método de pago' : 'Editar método de pago'}
+          confirmLabel={pmConfirm.kind === 'delete' ? 'Sí, eliminar' : 'Sí, editar'}
+          onCancel={() => setPmConfirm(null)}
+          onConfirm={() => void handleConfirmPaymentMethod()}
+        >
+          <p className="text-sm text-gray-600">
+            {pmConfirm.kind === 'delete' ? (
+              <>¿Eliminar el método <b>{pmConfirm.pm.name}</b>? Dejará de aparecer en el POS.</>
+            ) : (
+              <>¿Abrir la edición de <b>{pmConfirm.pm.name}</b>?</>
+            )}
+          </p>
+        </ConfirmModal>
       )}
     </>
   );

@@ -11,6 +11,8 @@ interface ConfirmModalProps {
   // 'boxed': cabecera con icono + pie con borde (eliminar producto/gasto).
   // 'plain': panel simple p-6 (eliminar categoría/cliente, anular venta).
   variant?: 'boxed' | 'plain';
+  // 'danger' = eliminar/anular (rojo). 'primary' = editar/habilitar/pagar (negro).
+  tone?: 'danger' | 'primary';
 }
 
 export default function ConfirmModal({
@@ -21,7 +23,13 @@ export default function ConfirmModal({
   onConfirm,
   onCancel,
   variant = 'boxed',
+  tone = 'danger',
 }: ConfirmModalProps) {
+  const confirmBtn =
+    tone === 'primary'
+      ? 'bg-gray-900 hover:bg-black text-white'
+      : 'bg-red-600 hover:bg-red-700 text-white';
+
   if (variant === 'plain') {
     return (
       <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -30,7 +38,7 @@ export default function ConfirmModal({
           {children}
           <div className="flex justify-end gap-2">
             <button onClick={onCancel} className="px-4 py-2 bg-gray-100 rounded-lg font-medium">{cancelLabel}</button>
-            <button onClick={onConfirm} className="px-4 py-2 bg-red-600 text-white rounded-lg font-bold">{confirmLabel}</button>
+            <button onClick={onConfirm} className={`px-4 py-2 rounded-lg font-bold ${confirmBtn}`}>{confirmLabel}</button>
           </div>
         </div>
       </div>
@@ -42,7 +50,7 @@ export default function ConfirmModal({
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden animate-in fade-in zoom-in duration-200">
         <div className="p-4 border-b border-gray-200 flex justify-between items-center bg-gray-50">
           <div className="flex items-center gap-2">
-            <Trash2 className="w-5 h-5 text-red-600" />
+            {tone === 'danger' && <Trash2 className="w-5 h-5 text-red-600" />}
             {typeof title === 'string' ? <h3 className="font-bold text-gray-900 text-base">{title}</h3> : title}
           </div>
           <button onClick={onCancel} className="text-gray-400 hover:text-black">
@@ -53,7 +61,7 @@ export default function ConfirmModal({
           {children}
           <div className="flex justify-end gap-2 pt-3 border-t border-gray-100">
             <button onClick={onCancel} className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-bold transition-colors">{cancelLabel}</button>
-            <button onClick={onConfirm} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold transition-colors shadow-sm">{confirmLabel}</button>
+            <button onClick={onConfirm} className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors shadow-sm ${confirmBtn}`}>{confirmLabel}</button>
           </div>
         </div>
       </div>

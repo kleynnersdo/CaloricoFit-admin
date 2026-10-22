@@ -6,6 +6,7 @@ import { Download, Edit, Plus, Trash2 } from 'lucide-react';
 import Modal from '../ui/Modal';
 import ConfirmModal from '../ui/ConfirmModal';
 import { Table, TableHeader, TableHeaderCell, TableBody, TableCell } from '../ui/Table';
+import Pagination, { pageSlice } from '../ui/Pagination';
 
 interface CustomersTabProps {
   showToast: (msg: string) => void;
@@ -18,6 +19,7 @@ export default function CustomersTab({ showToast }: CustomersTabProps) {
   const [customers, setCustomers] = useState<any[]>([]);
   const [customerSearch, setCustomerSearch] = useState("");
   const [customerFilterPoints, setCustomerFilterPoints] = useState(false);
+  const [page, setPage] = useState(0);
 
   useEffect(() => {
     fetchCustomers();
@@ -54,6 +56,7 @@ export default function CustomersTab({ showToast }: CustomersTabProps) {
   // Modal Eliminar Cliente
   const [customerToDelete, setCustomerToDelete] = useState<any>(null);
   const [isDeleteCustomerModalOpen, setIsDeleteCustomerModalOpen] = useState(false);
+  const [customerToEdit, setCustomerToEdit] = useState<any>(null);
 
   const handleSaveCustomer = async () => {
     const documentId = String(customerForm.document_id || '').trim().toUpperCase();
@@ -118,35 +121,41 @@ export default function CustomersTab({ showToast }: CustomersTabProps) {
 
   return (
     <>
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-         <h2 className="text-2xl font-bold text-gray-900">Base de Datos de Clientes</h2>
-         <div className="flex gap-2 w-full md:w-auto">
-           <input
-             type="text"
-             placeholder="Buscar por cédula, nombre..."
-             className="px-4 py-2 border border-gray-300 rounded-lg outline-none focus:border-black flex-1 md:w-64"
-             value={customerSearch}
-             onChange={e => setCustomerSearch(e.target.value)}
-           />
-           <button
-             onClick={() => setCustomerFilterPoints(!customerFilterPoints)}
-             className={`px-4 py-2 rounded-lg font-medium border ${customerFilterPoints ? 'bg-orange-50 border-orange-200 text-orange-700' : 'bg-white border-gray-300 text-gray-600'}`}
-             title="Ordenar por Puntos"
-           >
-             🌟
-           </button>
-           <button
-             onClick={() => { setCustomerForm({ ...emptyCustomerForm }); setIsAdminCustomerModalOpen(true); }}
-             className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2"
-           >
-             <Plus className="w-5 h-5"/> Cliente
-           </button>
-           <button
-             onClick={exportCustomers}
-             className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 transition-colors"
-           >
-             <Download className="w-5 h-5"/> Exportar (Excel)
-           </button>
+      <div className="flex flex-col mb-6 gap-3">
+         <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Base de Datos de Clientes</h2>
+         <div className="flex flex-col sm:flex-row gap-2 w-full">
+           <div className="flex gap-2 flex-1 min-w-0">
+             <input
+               type="text"
+               placeholder="Buscar por cédula, nombre..."
+               className="px-3 sm:px-4 py-2 border border-gray-300 rounded-lg outline-none focus:border-black flex-1 min-w-0 sm:max-w-xs"
+               value={customerSearch}
+               onChange={e => { setCustomerSearch(e.target.value); setPage(0); }}
+             />
+             <button
+               onClick={() => { setCustomerFilterPoints(!customerFilterPoints); setPage(0); }}
+               className={`shrink-0 px-3 py-2 rounded-lg font-medium border ${customerFilterPoints ? 'bg-orange-50 border-orange-200 text-orange-700' : 'bg-white border-gray-300 text-gray-600'}`}
+               title="Ordenar por Puntos"
+             >
+               🌟
+             </button>
+           </div>
+           <div className="grid grid-cols-2 sm:flex gap-2">
+             <button
+               onClick={() => { setCustomerForm({ ...emptyCustomerForm }); setIsAdminCustomerModalOpen(true); }}
+               className="justify-center bg-orange-500 hover:bg-orange-600 text-white px-3 py-2 rounded-lg font-medium flex items-center gap-1.5 text-sm"
+             >
+               <Plus className="w-4 h-4 shrink-0"/> Cliente
+             </button>
+             <button
+               onClick={exportCustomers}
+               className="justify-center bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded-lg font-medium flex items-center gap-1.5 text-sm transition-colors"
+             >
+               <Download className="w-4 h-4 shrink-0"/>
+               <span className="sm:hidden">Excel</span>
+               <span className="hidden sm:inline">Exportar (Excel)</span>
+             </button>
+           </div>
          </div>
       </div>
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden mb-6">
@@ -161,14 +170,14 @@ export default function CustomersTab({ showToast }: CustomersTabProps) {
             </tr>
           </TableHeader>
           <TableBody>
-            {filteredCustomers.map(c => (
+            {pageSlice(filteredCustomers, page).map(c => (
               <tr key={c.id}>
                 <TableCell className="font-bold">{c.first_name} {c.last_name}</TableCell>
                 <TableCell className="font-mono text-gray-500">{c.document_id}</TableCell>
                 <TableCell className="text-sm text-gray-500">{c.phone}<br/>{c.email} {c.city ? `• ${c.city}` : ''}</TableCell>
                 <TableCell className="text-center font-bold text-orange-600">{c.loyalty_points} 🌟</TableCell>
                 <TableCell className="text-center">
-                  <button onClick={() => { setCustomerForm({ ...c, loyalty_points: c.loyalty_points || 0 }); setIsAdminCustomerModalOpen(true); }} className="text-blue-500 hover:text-blue-700 mx-2" title="Editar"><Edit className="w-4 h-4"/></button>
+                  <button onClick={() => setCustomerToEdit(c)} className="text-blue-500 hover:text-blue-700 mx-2" title="Editar"><Edit className="w-4 h-4"/></button>
                   <button onClick={() => { setCustomerToDelete(c); setIsDeleteCustomerModalOpen(true); }} className="text-red-500 hover:text-red-700 mx-2" title="Eliminar"><Trash2 className="w-4 h-4"/></button>
                 </TableCell>
               </tr>
@@ -176,6 +185,9 @@ export default function CustomersTab({ showToast }: CustomersTabProps) {
             {filteredCustomers.length === 0 && <tr><td colSpan={5} className="p-8 text-center text-gray-500">No se encontraron clientes.</td></tr>}
           </TableBody>
         </Table>
+        <div className="px-4 pb-3">
+          <Pagination page={page} total={filteredCustomers.length} onChange={setPage} />
+        </div>
       </div>
 
       {isAdminCustomerModalOpen && (
@@ -204,6 +216,25 @@ export default function CustomersTab({ showToast }: CustomersTabProps) {
           onConfirm={handleConfirmDeleteCustomer}
         >
           <p className="text-sm text-gray-600">¿Eliminar a {customerToDelete.first_name} {customerToDelete.last_name} ({customerToDelete.document_id})?</p>
+        </ConfirmModal>
+      )}
+
+      {customerToEdit && (
+        <ConfirmModal
+          variant="plain"
+          tone="primary"
+          title="Editar cliente"
+          confirmLabel="Sí, editar"
+          onCancel={() => setCustomerToEdit(null)}
+          onConfirm={() => {
+            setCustomerForm({ ...customerToEdit, loyalty_points: customerToEdit.loyalty_points || 0 });
+            setCustomerToEdit(null);
+            setIsAdminCustomerModalOpen(true);
+          }}
+        >
+          <p className="text-sm text-gray-600">
+            ¿Abrir la edición de <b>{customerToEdit.first_name} {customerToEdit.last_name}</b>?
+          </p>
         </ConfirmModal>
       )}
     </>

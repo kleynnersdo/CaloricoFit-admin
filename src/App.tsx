@@ -141,7 +141,7 @@ export default function App() {
   }
 
   return (
-    <div className="antialiased min-h-screen bg-white">
+    <div className={`antialiased bg-white ${role === 'admin' || role === 'seller' ? 'h-dvh overflow-hidden' : 'min-h-screen'}`}>
       {role === 'admin' ? (
         <AdminDashboard onLogout={() => setSession(null)} />
       ) : role === 'ally' ? (

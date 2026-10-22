@@ -4,6 +4,7 @@ import { addDays, differenceInDays, format } from 'date-fns';
 import { AlertTriangle, CheckCircle, Edit, Plus, Trash2 } from 'lucide-react';
 import Modal from '../ui/Modal';
 import ConfirmModal from '../ui/ConfirmModal';
+import Pagination, { pageSlice } from '../ui/Pagination';
 
 interface ExpensesTabProps {
   showToast: (msg: string) => void;
@@ -16,6 +17,7 @@ interface ExpensesTabProps {
 // Gastos recurrentes: alta/edición, pago individual y eliminación.
 export default function ExpensesTab({ showToast, onAlertsChanged, refreshSignal }: ExpensesTabProps) {
   const [allExpensesList, setAllExpensesList] = useState<any[]>([]);
+  const [page, setPage] = useState(0);
 
   useEffect(() => {
     fetchRecurringExpensesAll();
@@ -33,6 +35,7 @@ export default function ExpensesTab({ showToast, onAlertsChanged, refreshSignal 
   // Modal Eliminar Gasto
   const [expenseToDelete, setExpenseToDelete] = useState<any>(null);
   const [isDeleteExpenseModalOpen, setIsDeleteExpenseModalOpen] = useState(false);
+  const [expenseConfirm, setExpenseConfirm] = useState<{ kind: 'edit' | 'pay'; expense: any } | null>(null);
 
   const handlePayExpense = async (expense: any) => {
      if (expense.frequency === 'once') {
@@ -137,26 +140,26 @@ export default function ExpensesTab({ showToast, onAlertsChanged, refreshSignal 
 
   return (
     <>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Gastos Recurrentes</h2>
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 mb-6">
+        <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Gastos Recurrentes</h2>
         <button
           onClick={() => setIsExpenseModalOpen(true)}
-          className="bg-black hover:bg-gray-800 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2"
+          className="w-full sm:w-auto justify-center bg-black hover:bg-gray-800 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2"
         >
           <Plus className="w-5 h-5"/> Nuevo Gasto Fijo
         </button>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {allExpensesList.map(exp => (
+          {pageSlice(allExpensesList, page).map(exp => (
               <div key={exp.id} className="bg-white border border-gray-200 p-6 rounded-xl shadow-sm flex flex-col justify-between">
                   <div>
                       <div className="font-bold text-lg mb-2 flex justify-between items-start">
                          {exp.description}
                          <div className="flex gap-2">
-                           <button onClick={() => { setExpenseForm({...exp, next_due_date: exp.next_due_date.substring(0,10)}); setIsExpenseModalOpen(true); }} className="text-blue-500 hover:text-blue-700">
+                           <button onClick={() => setExpenseConfirm({ kind: 'edit', expense: exp })} className="text-blue-500 hover:text-blue-700" title="Editar">
                              <Edit className="w-4 h-4"/>
                            </button>
-                           <button onClick={() => handleDeleteExpense(exp)} className="text-red-500 hover:text-red-700">
+                           <button onClick={() => handleDeleteExpense(exp)} className="text-red-500 hover:text-red-700" title="Eliminar">
                              <Trash2 className="w-4 h-4"/>
                            </button>
                          </div>
@@ -172,7 +175,7 @@ export default function ExpensesTab({ showToast, onAlertsChanged, refreshSignal 
                   </div>
                   {exp.is_active !== false && (
                   <button
-                    onClick={() => handlePayExpense(exp)}
+                    onClick={() => setExpenseConfirm({ kind: 'pay', expense: exp })}
                     className="w-full mt-4 bg-orange-100 hover:bg-orange-200 text-orange-800 font-bold py-2 rounded-lg transition-colors flex items-center justify-center gap-2"
                   >
                     <CheckCircle className="w-4 h-4"/> Pagar Individual
@@ -181,6 +184,7 @@ export default function ExpensesTab({ showToast, onAlertsChanged, refreshSignal 
               </div>
           ))}
       </div>
+      <Pagination page={page} total={allExpensesList.length} onChange={setPage} />
 
       {/* Modal Gasto */}
       {isExpenseModalOpen && (
@@ -218,6 +222,35 @@ export default function ExpensesTab({ showToast, onAlertsChanged, refreshSignal 
             <div className="font-bold mb-1 text-red-700 flex items-center gap-1.5"><AlertTriangle className="w-4 h-4"/> ADVERTENCIA</div>
             Esta acción eliminará de forma permanente el registro del gasto recurrente de la base de datos. Los pagos que ya hayan sido ejecutados e ingresados en el historial de gastos no se verán afectados.
           </div>
+        </ConfirmModal>
+      )}
+
+      {expenseConfirm && (
+        <ConfirmModal
+          variant="plain"
+          tone="primary"
+          title={expenseConfirm.kind === 'edit' ? 'Editar gasto' : 'Registrar pago'}
+          confirmLabel={expenseConfirm.kind === 'edit' ? 'Sí, editar' : 'Sí, pagar'}
+          onCancel={() => setExpenseConfirm(null)}
+          onConfirm={() => {
+            const exp = expenseConfirm.expense;
+            if (expenseConfirm.kind === 'edit') {
+              setExpenseForm({ ...exp, next_due_date: exp.next_due_date.substring(0, 10) });
+              setExpenseConfirm(null);
+              setIsExpenseModalOpen(true);
+              return;
+            }
+            setExpenseConfirm(null);
+            void handlePayExpense(exp);
+          }}
+        >
+          <p className="text-sm text-gray-600">
+            {expenseConfirm.kind === 'edit' ? (
+              <>¿Abrir la edición de <b>{expenseConfirm.expense.description}</b>?</>
+            ) : (
+              <>¿Marcar como pagado <b>{expenseConfirm.expense.description}</b> (${expenseConfirm.expense.amount_usd})?</>
+            )}
+          </p>
         </ConfirmModal>
       )}
     </>

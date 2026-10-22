@@ -7,6 +7,7 @@ import { format, startOfDay, startOfWeek, startOfMonth } from 'date-fns';
 import * as XLSX from 'xlsx';
 import { Bell, Download, Eye, FileText, Printer, Trash2 } from 'lucide-react';
 import Modal from '../ui/Modal';
+import Pagination, { pageSlice } from '../ui/Pagination';
 
 interface CashClosuresProps {
   cashClosures: any[];
@@ -31,6 +32,7 @@ export default function CashClosures({ cashClosures, showToast, onRefresh }: Cas
   const [downloadDateRange, setDownloadDateRange] = useState<'ALL' | 'TODAY' | 'WEEK' | 'MONTH' | 'QUARTER' | 'SEMESTER' | 'YEAR'>('ALL');
   const [downloadSpecificYear, setDownloadSpecificYear] = useState<number>(new Date().getFullYear());
   const [downloadGrouping, setDownloadGrouping] = useState<'DETAILED' | 'DAILY' | 'WEEKLY' | 'MONTHLY'>('DETAILED');
+  const [page, setPage] = useState(0);
 
   const openClosureTicket = async (c: any) => {
     setSelectedClosureTicket(c);
@@ -439,7 +441,7 @@ export default function CashClosures({ cashClosures, showToast, onRefresh }: Cas
           </div>
         </div>
         <div className="p-4 max-h-[350px] overflow-y-auto space-y-3">
-          {cashClosures.map(c => (
+          {pageSlice(cashClosures, page).map(c => (
             <div key={c.id} className="p-3 border border-gray-200 rounded-lg bg-gray-50/80 hover:bg-white transition-all shadow-xs">
               <div className="flex justify-between items-center mb-2 pb-2 border-b border-gray-200">
                 <div>
@@ -465,6 +467,7 @@ export default function CashClosures({ cashClosures, showToast, onRefresh }: Cas
             </div>
           ))}
           {cashClosures.length === 0 && <div className="text-gray-500 text-sm text-center py-6">No hay cierres recientes.</div>}
+          <Pagination page={page} total={cashClosures.length} onChange={setPage} />
         </div>
       </div>
 

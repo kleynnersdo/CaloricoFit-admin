@@ -1,16 +1,32 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../lib/apiClient';
+import { addProductStock } from '../../lib/inventoryApi';
 import { emptyToNull } from '../../lib/utils';
-import { AlertTriangle, Edit, HelpCircle, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Edit, HelpCircle, Plus, Trash2 } from 'lucide-react';
 import Modal from '../ui/Modal';
 import ConfirmModal from '../ui/ConfirmModal';
 import { Table, TableHeader, TableHeaderCell, TableBody, TableCell } from '../ui/Table';
+import Pagination, { pageSlice } from '../ui/Pagination';
 
 interface InventoryTabProps {
   showToast: (msg: string) => void;
 }
 
-const emptyProductForm = { name: '', category: 'General', subcategory: '', sku: '', barcode: '', flavor: '', cost_price: 0, sale_price: 0, stock_quantity: 0, wholesale_price: 0, min_wholesale_qty: 0, ally_points_per_unit: 0 };
+const emptyProductForm = {
+  name: '',
+  category: 'General',
+  subcategory: '',
+  sku: '',
+  barcode: '',
+  flavor: '',
+  cost_price: 0,
+  sale_price: 0,
+  stock_quantity: 0,
+  stockToAdd: 0,
+  wholesale_price: 0,
+  min_wholesale_qty: 0,
+  ally_points_per_unit: 0,
+};
 
 // Inventario y Categorías: CRUD de productos (con gasto automático de mercancía)
 // y gestión de categorías/subcategorías.
@@ -19,6 +35,7 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
   const [productCategories, setProductCategories] = useState<any[]>([]);
   const [inventoryFilterCategory, setInventoryFilterCategory] = useState<string>('ALL');
   const [inventorySort, setInventorySort] = useState<string>('LATEST');
+  const [page, setPage] = useState(0);
 
   useEffect(() => {
     fetchProducts();
@@ -50,6 +67,12 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
   // Modal Eliminar Producto
   const [productToDelete, setProductToDelete] = useState<any>(null);
   const [isDeleteProductModalOpen, setIsDeleteProductModalOpen] = useState(false);
+  const [inventoryConfirm, setInventoryConfirm] = useState<
+    | { kind: 'edit-product'; product: any }
+    | { kind: 'edit-category'; category: any }
+    | { kind: 'clear-subs' }
+    | null
+  >(null);
 
   const emptyProductPayload = () => ({ ...emptyProductForm });
 
@@ -66,8 +89,15 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
       showToast("Los precios no pueden ser negativos.");
       return false;
     }
-    if (Number(productForm.stock_quantity) < 0) {
-      showToast("El stock no puede ser negativo.");
+    if (productForm.id) {
+      const add = Math.trunc(Number(productForm.stockToAdd) || 0);
+      const current = Number(productForm.stock_quantity) || 0;
+      if (current + add < 0) {
+        showToast('El stock no puede quedar negativo.');
+        return false;
+      }
+    } else if (Number(productForm.stock_quantity) < 0) {
+      showToast('El stock inicial no puede ser negativo.');
       return false;
     }
     if (Number(productForm.wholesale_price) < 0 || Number(productForm.min_wholesale_qty) < 0) {
@@ -87,6 +117,7 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
   const handleSaveProduct = async () => {
     if (!validateProductForm()) return;
 
+    const stockToAdd = Math.trunc(Number(productForm.stockToAdd) || 0);
     const payload: any = {
       name: String(productForm.name).trim(),
       category: productForm.category,
@@ -98,27 +129,33 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
       sale_price: Number(productForm.sale_price) || 0,
       wholesale_price: Number(productForm.wholesale_price) || 0,
       min_wholesale_qty: Number(productForm.min_wholesale_qty) || 0,
-      stock_quantity: Number(productForm.stock_quantity) || 0,
       ally_points_per_unit: Math.max(0, Math.floor(Number(productForm.ally_points_per_unit) || 0)),
     };
 
     if (productForm.id) {
-       const previous = products.find((p: any) => p.id === productForm.id);
+       // No enviar stock_quantity aquí: se ajusta aparte para no pisar ventas del POS.
        const { error } = await api.from('products').update(payload).eq('id', productForm.id);
        if (error) {
          showToast("Error actualizando: " + error.message);
          return;
        }
-       const addedStock = Number(payload.stock_quantity) - Number(previous?.stock_quantity || 0);
-       if (addedStock > 0) {
-         await api.from('expenses').insert([{
-           description: `Reposición: ${payload.name}${payload.flavor ? ` (${payload.flavor})` : ''}`,
-           amount_usd: payload.cost_price * addedStock,
-           category: 'inventory_purchase'
-         }]);
+       if (stockToAdd !== 0) {
+         const { error: stockErr } = await addProductStock(productForm.id, stockToAdd);
+         if (stockErr) {
+           showToast('Datos guardados, pero el stock falló: ' + stockErr.message);
+           fetchProducts();
+           return;
+         }
+         showToast(
+           stockToAdd > 0
+             ? `Producto actualizado. Se sumaron ${stockToAdd} unds al stock.`
+             : `Producto actualizado. Se restaron ${Math.abs(stockToAdd)} unds del stock.`
+         );
+       } else {
+         showToast('Producto actualizado. Las ventas anteriores conservan su precio y costo.');
        }
-       showToast("Producto actualizado. Las ventas anteriores conservan su precio y costo.");
     } else {
+       payload.stock_quantity = Number(productForm.stock_quantity) || 0;
        const { error } = await api.from('products').insert([payload]);
        if (error) {
          showToast("Error creando: " + error.message);
@@ -315,47 +352,55 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
 
   return (
     <>
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
-        <h2 className="text-2xl font-bold text-gray-900">Inventario y Categorías</h2>
-        <div className="flex flex-wrap gap-2">
-            <select
-                className="px-4 py-2 border border-gray-300 rounded-lg outline-none focus:border-black text-sm"
-                value={inventoryFilterCategory}
-                onChange={(e) => setInventoryFilterCategory(e.target.value)}
-            >
-                <option value="ALL">Todas las Categorías</option>
-                {productCategories.map(c => (
-                    <option key={c.id} value={c.name}>{c.name} {c.parent_category ? `(Sub de ${c.parent_category})` : ''}</option>
-                ))}
-            </select>
-            <select
-                className="px-4 py-2 border border-gray-300 rounded-lg outline-none focus:border-black text-sm"
-                value={inventorySort}
-                onChange={(e) => setInventorySort(e.target.value)}
-            >
-                <option value="LATEST">Últimos Agregados</option>
-                <option value="NAME">Por Nombre</option>
-                <option value="STOCK_LOW">Menor Stock</option>
-            </select>
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-3 md:gap-4">
+        <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Inventario y Categorías</h2>
+        <div className="w-full md:w-auto grid grid-cols-2 md:flex md:flex-wrap gap-2">
+            <div className="relative min-w-0">
+                <select
+                    className="w-full appearance-none pl-3 pr-9 py-2 border border-gray-300 rounded-lg outline-none focus:border-black text-sm bg-white"
+                    value={inventoryFilterCategory}
+                    onChange={(e) => { setInventoryFilterCategory(e.target.value); setPage(0); }}
+                >
+                    <option value="ALL">Todas las Categorías</option>
+                    {productCategories.map(c => (
+                        <option key={c.id} value={c.name}>{c.name} {c.parent_category ? `(Sub de ${c.parent_category})` : ''}</option>
+                    ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" aria-hidden />
+            </div>
+            <div className="relative min-w-0">
+                <select
+                    className="w-full appearance-none pl-3 pr-9 py-2 border border-gray-300 rounded-lg outline-none focus:border-black text-sm bg-white"
+                    value={inventorySort}
+                    onChange={(e) => setInventorySort(e.target.value)}
+                >
+                    <option value="LATEST">Últimos Agregados</option>
+                    <option value="NAME">Por Nombre</option>
+                    <option value="STOCK_LOW">Menor Stock</option>
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" aria-hidden />
+            </div>
             <button
               onClick={() => openCategoryModal(null)}
-              className="bg-gray-100 hover:bg-gray-200 text-gray-800 px-4 py-2 rounded-lg font-medium flex items-center gap-2 text-sm border border-gray-300">
-              <Plus className="w-4 h-4"/> Categoría
+              className="justify-center bg-gray-100 hover:bg-gray-200 text-gray-800 px-3 py-2 rounded-lg font-medium flex items-center gap-1.5 text-sm border border-gray-300">
+              <Plus className="w-4 h-4 shrink-0"/> Categoría
             </button>
             <button
               onClick={() => { setProductForm(emptyProductPayload()); setIsProductModalOpen(true); }}
-              className="bg-orange-500 hover:bg-orange-600 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 text-sm">
-              <Plus className="w-4 h-4"/> Mercancía
+              className="justify-center bg-orange-500 hover:bg-orange-600 text-white px-3 py-2 rounded-lg font-medium flex items-center gap-1.5 text-sm">
+              <Plus className="w-4 h-4 shrink-0"/> Mercancía
             </button>
         </div>
       </div>
       {productCategories.filter((c: any) => !c.parent_category).length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-4">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2 mb-4">
           {productCategories.filter((c: any) => !c.parent_category).map((c: any) => (
-            <div key={c.id} className="flex items-center gap-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm">
-              <span className="font-medium text-gray-800">{c.name}</span>
-              <button onClick={() => openCategoryModal(c)} className="text-blue-500 hover:text-blue-700 p-0.5" title="Editar categoría"><Edit className="w-3.5 h-3.5"/></button>
-              <button onClick={() => { setCategoryToDelete(c); setReassignCategoryName('General'); setIsDeleteCategoryModalOpen(true); }} className="text-red-500 hover:text-red-700 p-0.5" title="Eliminar categoría"><Trash2 className="w-3.5 h-3.5"/></button>
+            <div key={c.id} className="flex items-center justify-between gap-1 bg-white border border-gray-200 rounded-lg px-3 py-2 sm:py-1.5 text-sm min-w-0">
+              <span className="font-medium text-gray-800 truncate">{c.name}</span>
+              <span className="flex items-center gap-0.5 shrink-0">
+                <button onClick={() => setInventoryConfirm({ kind: 'edit-category', category: c })} className="text-blue-500 hover:text-blue-700 p-0.5" title="Editar categoría"><Edit className="w-3.5 h-3.5"/></button>
+                <button onClick={() => { setCategoryToDelete(c); setReassignCategoryName('General'); setIsDeleteCategoryModalOpen(true); }} className="text-red-500 hover:text-red-700 p-0.5" title="Eliminar categoría"><Trash2 className="w-3.5 h-3.5"/></button>
+              </span>
             </div>
           ))}
         </div>
@@ -378,7 +423,7 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
             {filteredProducts.length === 0 ? (
               <tr><td colSpan={8} className="p-8 text-center text-gray-500">No hay productos registrados en esta categoría.</td></tr>
             ) : (
-              filteredProducts.map(p => (
+              pageSlice(filteredProducts, page).map(p => (
                 <tr key={p.id}>
                   <TableCell className="font-medium">{p.name}<div className="text-xs text-gray-400 font-mono">{p.sku || p.barcode || ''}</div></TableCell>
                   <TableCell className="text-sm text-gray-600">
@@ -394,7 +439,7 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
                   <TableCell className="text-right font-bold">${p.sale_price}</TableCell>
                   <TableCell className="text-right text-sm text-gray-600">{Number(p.wholesale_price) > 0 ? `$${p.wholesale_price} / ${p.min_wholesale_qty || 1}u` : '—'}</TableCell>
                   <TableCell className="text-center">
-                    <button onClick={() => { setProductForm({ ...emptyProductForm, ...p, flavor: p.flavor || '', barcode: p.barcode || '', wholesale_price: p.wholesale_price || 0, min_wholesale_qty: p.min_wholesale_qty || 0, ally_points_per_unit: p.ally_points_per_unit || 0 }); setIsProductModalOpen(true); }} className="text-blue-500 hover:text-blue-700 mx-2" title="Editar"><Edit className="w-4 h-4"/></button>
+                    <button onClick={() => setInventoryConfirm({ kind: 'edit-product', product: p })} className="text-blue-500 hover:text-blue-700 mx-2" title="Editar"><Edit className="w-4 h-4"/></button>
                     <button onClick={() => handleDeleteProduct(p)} className="text-red-500 hover:text-red-700 mx-2" title="Eliminar"><Trash2 className="w-4 h-4"/></button>
                   </TableCell>
                 </tr>
@@ -402,6 +447,9 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
             )}
           </TableBody>
         </Table>
+        <div className="px-4 pb-3">
+          <Pagination page={page} total={filteredProducts.length} onChange={setPage} />
+        </div>
       </div>
 
       {/* Modal Producto */}
@@ -449,10 +497,67 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
             <div><label className="block text-sm font-medium mb-1">SKU</label><input type="text" className="w-full px-3 py-2 border rounded" value={productForm.sku || ''} onChange={e => setProductForm({...productForm, sku: e.target.value})} /></div>
             <div><label className="block text-sm font-medium mb-1">Código de barras</label><input type="text" className="w-full px-3 py-2 border rounded font-mono" value={productForm.barcode || ''} onChange={e => setProductForm({...productForm, barcode: e.target.value})} /></div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div><label className="block text-sm font-medium mb-1">Stock</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.stock_quantity} onChange={e => setProductForm({...productForm, stock_quantity: Number(e.target.value)})} /></div>
-            <div><label className="block text-sm font-medium mb-1">Costo Base (USD)</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.cost_price} onChange={e => setProductForm({...productForm, cost_price: Number(e.target.value)})} /></div>
-          </div>
+          {productForm.id ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-3 rounded-lg border border-orange-100 bg-orange-50/60">
+              <div>
+                <label className="block text-sm font-medium mb-1 text-gray-700">Stock actual</label>
+                <div className="w-full px-3 py-2 border border-orange-200 rounded bg-white font-bold text-gray-900">
+                  {Number(productForm.stock_quantity) || 0} unds
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1 text-gray-700">Cantidad a agregar</label>
+                <input
+                  type="number"
+                  step={1}
+                  className="w-full px-3 py-2 border border-orange-200 rounded bg-white"
+                  value={productForm.stockToAdd ?? 0}
+                  onChange={(e) => setProductForm({ ...productForm, stockToAdd: Number(e.target.value) })}
+                  placeholder="0"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Se suma al stock actual
+                  {Number(productForm.stockToAdd) ? (
+                    <> → queda <b>{(Number(productForm.stock_quantity) || 0) + (Math.trunc(Number(productForm.stockToAdd) || 0))}</b></>
+                  ) : null}
+                  . Usa negativo solo para ajustar de más.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Stock inicial</label>
+                <input
+                  type="number"
+                  min={0}
+                  className="w-full px-3 py-2 border rounded"
+                  value={productForm.stock_quantity}
+                  onChange={(e) => setProductForm({ ...productForm, stock_quantity: Number(e.target.value) })}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Costo Base (USD)</label>
+                <input
+                  type="number"
+                  className="w-full px-3 py-2 border rounded"
+                  value={productForm.cost_price}
+                  onChange={(e) => setProductForm({ ...productForm, cost_price: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+          )}
+          {productForm.id && (
+            <div>
+              <label className="block text-sm font-medium mb-1">Costo Base (USD)</label>
+              <input
+                type="number"
+                className="w-full px-3 py-2 border rounded"
+                value={productForm.cost_price}
+                onChange={(e) => setProductForm({ ...productForm, cost_price: Number(e.target.value) })}
+              />
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div><label className="block text-sm font-medium mb-1">Precio Venta (USD)</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.sale_price} onChange={e => setProductForm({...productForm, sale_price: Number(e.target.value)})} /></div>
             <div><label className="block text-sm font-medium mb-1">Precio al mayor (USD)</label><input type="number" className="w-full px-3 py-2 border rounded" value={productForm.wholesale_price || 0} onChange={e => setProductForm({...productForm, wholesale_price: Number(e.target.value)})} /></div>
@@ -510,7 +615,7 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
                 </div>
                 <button
                   type="button"
-                  onClick={() => setSubcategoriesList([])}
+                  onClick={() => setInventoryConfirm({ kind: 'clear-subs' })}
                   className="text-xs text-red-500 hover:underline font-medium"
                 >
                   Eliminar todas
@@ -595,6 +700,61 @@ export default function InventoryTab({ showToast }: InventoryTabProps) {
             </div>
             El producto no se borrará por completo de la base de datos para no alterar las estadísticas históricas y reportes de ventas, sino que se marcará como <span className="font-bold">Inactivo</span> para que no vuelva a aparecer en el inventario ni en el POS de los vendedores.
           </div>
+        </ConfirmModal>
+      )}
+
+      {inventoryConfirm && (
+        <ConfirmModal
+          variant="plain"
+          tone={inventoryConfirm.kind === 'clear-subs' ? 'danger' : 'primary'}
+          title={
+            inventoryConfirm.kind === 'edit-product'
+              ? 'Editar producto'
+              : inventoryConfirm.kind === 'edit-category'
+                ? 'Editar categoría'
+                : 'Eliminar subcategorías'
+          }
+          confirmLabel={
+            inventoryConfirm.kind === 'clear-subs' ? 'Sí, eliminar todas' : 'Sí, editar'
+          }
+          onCancel={() => setInventoryConfirm(null)}
+          onConfirm={() => {
+            if (inventoryConfirm.kind === 'edit-product') {
+              const p = inventoryConfirm.product;
+              setProductForm({
+                ...emptyProductForm,
+                ...p,
+                flavor: p.flavor || '',
+                barcode: p.barcode || '',
+                wholesale_price: p.wholesale_price || 0,
+                min_wholesale_qty: p.min_wholesale_qty || 0,
+                ally_points_per_unit: p.ally_points_per_unit || 0,
+              });
+              setInventoryConfirm(null);
+              setIsProductModalOpen(true);
+              return;
+            }
+            if (inventoryConfirm.kind === 'edit-category') {
+              const c = inventoryConfirm.category;
+              setInventoryConfirm(null);
+              openCategoryModal(c);
+              return;
+            }
+            setSubcategoriesList([]);
+            setInventoryConfirm(null);
+          }}
+        >
+          <p className="text-sm text-gray-600">
+            {inventoryConfirm.kind === 'edit-product' && (
+              <>¿Abrir la edición de <b>{inventoryConfirm.product.name}</b>?</>
+            )}
+            {inventoryConfirm.kind === 'edit-category' && (
+              <>¿Abrir la edición de la categoría <b>{inventoryConfirm.category.name}</b>?</>
+            )}
+            {inventoryConfirm.kind === 'clear-subs' && (
+              <>¿Quitar todas las subcategorías de esta lista? Aún debes guardar la categoría para aplicar el cambio.</>
+            )}
+          </p>
         </ConfirmModal>
       )}
     </>

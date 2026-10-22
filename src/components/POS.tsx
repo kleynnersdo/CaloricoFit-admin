@@ -894,7 +894,7 @@ export default function POS({ onLogout }: POSProps) {
   };
 
   return (
-    <div className="flex h-screen w-full bg-[#f8f9fa] overflow-hidden text-black font-sans relative">
+    <div className="flex flex-col lg:flex-row h-[100dvh] w-full bg-[#f8f9fa] overflow-hidden text-black font-sans relative">
       
       {/* Toast Notification */}
       {toastMessage && (
@@ -923,9 +923,6 @@ export default function POS({ onLogout }: POSProps) {
                   <div>Cédula: {customer?.document_id}</div>
                   <div>Teléfono: {customer?.phone}</div>
                   <div>Tasa BCV oficial: Bs. {Number(actualOficialBCV || 0).toFixed(2)}</div>
-                  {Number(vesMarkupPercentage) > 0 && (
-                    <div>Tasa con ajuste cambiario ({Number(vesMarkupPercentage)}%): Bs. {formatBs(effectiveVesRate)}</div>
-                  )}
                 </div>
                 <div className="border-b border-dashed border-gray-300 pb-2 mb-2">
                   <div className="grid grid-cols-12 font-bold mb-1">
@@ -1613,14 +1610,14 @@ export default function POS({ onLogout }: POSProps) {
       )}
 
       {/* SECCIÓN IZQUIERDA: Búsqueda y Resultados (70%) */}
-      <div className="flex-1 min-h-0 flex flex-col p-6 overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col p-3 sm:p-4 lg:p-6 overflow-hidden order-2 lg:order-1">
         
         {/* Cabecera / Buscador Ultra Rápido */}
-        <div className="mb-6 flex justify-between items-center">
-          <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
+        <div className="mb-3 lg:mb-6 flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
+          <h1 className="text-lg sm:text-2xl font-bold tracking-tight flex items-center gap-2">
             <span className="text-orange-500">Calórico Fit</span> POS
           </h1>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setIsWholesaleMode(v => !v)}
               className={cn(
@@ -1758,8 +1755,8 @@ export default function POS({ onLogout }: POSProps) {
         </div>
       </div>
 
-      {/* SECCIÓN DERECHA: Carrito de Compras (30%) — min-h-0 para que totales/vueltos no queden fuera de pantalla */}
-      <div className="w-96 max-w-[40vw] min-h-0 shrink-0 bg-white shadow-[-10px_0_30px_rgba(0,0,0,0.03)] flex flex-col z-10 border-l border-gray-100">
+      {/* SECCIÓN DERECHA: Carrito — en móvil arriba (prioridad cobro), en desktop a la derecha */}
+      <div className="w-full lg:w-96 lg:max-w-[40vw] min-h-0 max-h-[48dvh] lg:max-h-none shrink-0 bg-white shadow-sm lg:shadow-[-10px_0_30px_rgba(0,0,0,0.03)] flex flex-col z-10 border-b lg:border-b-0 lg:border-l border-gray-100 order-1 lg:order-2">
         
         {/* CRM / Identificación rápida del cliente */}
         <div className="p-4 border-b border-gray-100 flex items-center justify-between bg-gray-50/50">

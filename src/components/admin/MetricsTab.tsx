@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { api } from '../../lib/apiClient';
 import { errorMessage } from '../../lib/apiError';
 import { fetchProductNameMap, fetchWorkerMap, withWorkerProfile } from '../../lib/metricsHelpers';
@@ -152,24 +153,27 @@ export default function MetricsTab({ showToast }: MetricsTabProps) {
 
   return (
     <>
-      <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Métricas Generales</h2>
-        <select
-          title="Filtrar por periodo"
-          className="bg-white border text-sm font-medium border-gray-300 text-gray-700 py-2 px-4 rounded-lg outline-none"
-          value={metricFilter}
-          onChange={(e) => setMetricFilter(e.target.value as any)}
-        >
-          <option value="day">Ventas del Día</option>
-          <option value="week">Ventas de la Semana</option>
-          <option value="month">Ventas del Mes</option>
-        </select>
+      <div className="flex flex-wrap justify-between items-center gap-3 mb-6">
+        <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Métricas Generales</h2>
+        <div className="relative shrink-0">
+          <select
+            title="Filtrar por periodo"
+            className="appearance-none bg-white border text-sm font-medium border-gray-300 text-gray-700 py-2 pl-4 pr-10 rounded-lg outline-none"
+            value={metricFilter}
+            onChange={(e) => setMetricFilter(e.target.value as any)}
+          >
+            <option value="day">Ventas del Día</option>
+            <option value="week">Ventas de la Semana</option>
+            <option value="month">Ventas del Mes</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" aria-hidden />
+        </div>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-6 mb-8">
         <StatCard accent="blue" label="Total Ventas Brutas" value={`$${Number(metrics.sales || 0).toFixed(2)}`} />
         <StatCard accent="red" label="Gastos e Inversión" value={`$${Number(metrics.expenses || 0).toFixed(2)}`} />
         <StatCard accent="purple" label="Ganancia Prod." value={`$${Number(metrics.productProfit || 0).toFixed(2)}`} />
-        <StatCard accent="green" label="Ganancia Neta" value={`$${Number(metrics.netProfit || 0).toFixed(2)}`} valueClassName={`text-3xl font-bold ${metrics.netProfit >= 0 ? "text-green-600" : "text-red-500"}`} />
+        <StatCard accent="green" label="Ganancia Neta" value={`$${Number(metrics.netProfit || 0).toFixed(2)}`} valueClassName={`text-2xl sm:text-3xl font-bold ${metrics.netProfit >= 0 ? "text-green-600" : "text-red-500"}`} />
       </div>
 
       <div className="mb-8">

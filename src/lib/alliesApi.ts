@@ -140,6 +140,16 @@ export async function updateAlly(
   return parseJson(res);
 }
 
+export async function deleteAlly(
+  allyId: string
+): Promise<ApiResult<{ id: string; deleted: boolean }>> {
+  const res = await fetch(`${getApiBase()}/allies/${encodeURIComponent(allyId)}`, {
+    method: 'DELETE',
+    headers: authHeaders(),
+  });
+  return parseJson(res);
+}
+
 export async function getAllyMe(): Promise<ApiResult<AllyProfile>> {
   const res = await fetch(`${getApiBase()}/ally/me`, { headers: authHeaders() });
   return parseJson(res);
